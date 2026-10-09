@@ -1,0 +1,16 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "linkedProjects": ["Cargo.toml"],
+        "cargo": {
+          "target": "thumbv7em-none-eabihf",
+          "features": ["defmt"]
+        },
+        "check": {
+          "allTargets": false
+        }
+      }
+    }
+  }
+}
