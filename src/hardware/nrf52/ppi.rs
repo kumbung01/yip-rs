@@ -6,12 +6,10 @@ use embassy_nrf::{
         ppi::regs::Chen,
     },
     ppi::{AnyConfigurableChannel, AnyGroup, Channel, Group},
-    rtc::Rtc,
-    timer::Timer,
 };
 
-use crate::egu::{YipEgu, YipTrigger};
-use crate::radio::YipRadio;
+use crate::hardware::clock::ClockDriver;
+use crate::hardware::egu::{EguDriver, Trigger};
 
 pub(crate) const YIP_PPI_CHANNEL_COUNT: usize = 8;
 pub(crate) type PpiChannel<'d> = Peri<'d, AnyConfigurableChannel>;
@@ -24,16 +22,17 @@ macro_rules! ppi_channels {
     };
 }
 
-pub(crate) struct YipPpi<'d> {
-    channels: [PpiChannel<'d>; YIP_PPI_CHANNEL_COUNT],
+pub(crate) struct PpiDriver {
+    channels: [PpiChannel<'static>; YIP_PPI_CHANNEL_COUNT],
     mask: Chen,
-    group: PpiGroup<'d>,
+    group: PpiGroup<'static>,
 }
 
-impl<'d> YipPpi<'d> {
+#[allow(dead_code)]
+impl PpiDriver {
     pub(crate) fn new(
-        channels: [PpiChannel<'d>; YIP_PPI_CHANNEL_COUNT],
-        group: PpiGroup<'d>,
+        channels: [PpiChannel<'static>; YIP_PPI_CHANNEL_COUNT],
+        group: PpiGroup<'static>,
     ) -> Self {
         let mask = Chen(
             channels
@@ -45,7 +44,7 @@ impl<'d> YipPpi<'d> {
             mask,
             group: group.into(),
         };
-        this.clear();
+        this.clear_all();
         this
     }
 
@@ -80,14 +79,10 @@ impl<'d> YipPpi<'d> {
         1u32 << self.channels[channel].number()
     }
 
-    fn clear(&mut self) {
+    fn clear_all(&mut self) {
         let ppi = embassy_nrf::pac::PPI;
 
-        // 우선 채널을 모두 끈다.
-        self.disable();
-
-        // 그룹에서 모든 채널을 제거한다.
-        ppi.chg(self.group.number()).write(|_| ());
+        self.clear();
 
         // 기존 endpoint 설정을 제거한다.
         for channel in &self.channels {
@@ -99,18 +94,23 @@ impl<'d> YipPpi<'d> {
         }
     }
 
-    pub(crate) fn configure_central(
-        &mut self,
-        _radio: &mut YipRadio,
-        _timer: &mut Timer<'static>,
-        _egu: &mut YipEgu,
-    ) {
+    pub(crate) fn clear(&mut self) {
+        let ppi = embassy_nrf::pac::PPI;
+
+        // 우선 채널을 모두 끈다.
+        self.disable();
+
+        // 그룹에서 모든 채널을 제거한다.
+        ppi.chg(self.group.number()).write(|_| ());
+    }
+
+    pub(crate) fn configure_central(&mut self, clock: &mut ClockDriver, _egu: &mut EguDriver) {
         let ppi = pac::PPI;
-        let radio = _radio.regs();
-        let timer = _timer.regs();
+        let radio = pac::RADIO;
+        let timer = clock.timer.regs();
         let egu = _egu.regs();
 
-        let timeslot_end = YipTrigger::TimeslotEnd as usize;
+        let timeslot_end = Trigger::TimeslotEnd as usize;
 
         let group_num = self.group.number();
         let task_group_enable = ppi.tasks_chg(group_num).en();
@@ -162,19 +162,13 @@ impl<'d> YipPpi<'d> {
         self.include_group(5);
     }
 
-    pub(crate) fn configure_sync(
-        &mut self,
-        _radio: &mut YipRadio,
-        _timer: &mut Timer<'static>,
-        _rtc: &mut Rtc<'static>,
-        _egu: &mut YipEgu,
-    ) {
-        let radio = _radio.regs();
-        let timer = _timer.regs();
-        let rtc = _rtc.regs();
+    pub(crate) fn configure_sync(&mut self, _clock: &mut ClockDriver, _egu: &mut EguDriver) {
+        let radio = pac::RADIO;
+        let timer = _clock.timer.regs();
+        let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
-        self.disable();
+        self.clear();
 
         // rtc.comp0 -> timer.en
         let mut channels = self.connect(0, rtc.events_compare(0), timer.tasks_start(), None);
@@ -192,7 +186,7 @@ impl<'d> YipPpi<'d> {
         channels |= self.connect(
             4,
             radio.events_disabled(),
-            egu.tasks_trigger(YipTrigger::TimeslotEnd as usize),
+            egu.tasks_trigger(Trigger::TimeslotEnd as usize),
             Some(timer.tasks_shutdown()),
         );
 
@@ -201,18 +195,18 @@ impl<'d> YipPpi<'d> {
 
     pub(crate) fn configure_peripheral_prepare_rx(
         &mut self,
-        _rtc: &mut Rtc<'static>,
-        _egu: &mut YipEgu,
+        _clock: &mut ClockDriver,
+        _egu: &mut EguDriver,
     ) {
-        let rtc = _rtc.regs();
+        let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
-        self.disable();
+        self.clear();
 
         let channels = self.connect(
             0,
             rtc.events_compare(0),
-            egu.tasks_trigger(YipTrigger::Start as usize),
+            egu.tasks_trigger(Trigger::Start as usize),
             None,
         );
 
@@ -221,98 +215,90 @@ impl<'d> YipPpi<'d> {
 
     pub(crate) fn configure_peripheral_next_rx(
         &mut self,
-        _radio: &mut YipRadio,
-        _timer: &mut Timer<'static>,
-        _rtc: &mut Rtc<'static>,
-        _egu: &mut YipEgu,
+        _clock: &mut ClockDriver,
+        _egu: &mut EguDriver,
     ) {
         let ppi = pac::PPI;
-        let radio = _radio.regs();
-        let timer = _timer.regs();
-        let rtc = _rtc.regs();
+        let radio = pac::RADIO;
+        let timer = _clock.timer.regs();
+        let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
-        let timeslot_end = YipTrigger::TimeslotEnd as usize;
-        let timeout = YipTrigger::Disabled as usize;
+        let timeslot_end = Trigger::TimeslotEnd as usize;
 
         let group_num = self.group.number();
         let task_group_enable = ppi.tasks_chg(group_num).en();
         let task_group_disable = ppi.tasks_chg(group_num).dis();
 
-        let mut channels: u32 = 0;
+        self.clear();
 
-        self.disable();
-
-        // rtc.comp0 -> (timer.start, radio.rxen, group.en)
-        channels |= self.connect(
+        // rtc.comp0 -> (timer.start, group.en)
+        let mut channels = self.connect(
             0,
             rtc.events_compare(0),
             timer.tasks_start(),
-            Some(radio.tasks_rxen()),
+            Some(task_group_enable),
         );
-        channels |= self.connect(1, rtc.events_compare(0), task_group_enable, None);
 
-        // radio.rxaddr -> timer.capture2,
-        // include group
+        channels |= self.connect(1, timer.events_compare(0), radio.tasks_rxen(), None);
+        self.include_group(1);
+
+        // radio.rxaddr -> timer.capture2
         channels |= self.connect(2, radio.events_address(), timer.tasks_capture(2), None);
         self.include_group(2);
 
-        // radio.disabled -> (radio.txen, group.dis)
-        // include group
+        // (timer.comp1 || radio.crcerror) -> (egu.trigger(timeslot_end) -> SWI, group.dis)
         channels |= self.connect(
             3,
-            radio.events_disabled(),
-            radio.tasks_txen(),
+            timer.events_compare(1),
+            egu.tasks_trigger(timeslot_end),
             Some(task_group_disable),
         );
-        self.include_group(3);
-
-        // (timer.comp1) -> (egu.trigger(timeout) -> SWI, group.dis)
         channels |= self.connect(
             4,
-            timer.events_compare(1),
-            egu.tasks_trigger(timeout),
+            radio.events_crcerror(),
+            egu.tasks_trigger(timeslot_end),
             Some(task_group_disable),
         );
 
-        // timer.comp1 -> egu.trigger(timeslotEnd)
+        // radio.crcok -> egu.trigger(timeslot_end)
         channels |= self.connect(
             5,
-            timer.events_compare(1),
+            radio.events_crcok(),
             egu.tasks_trigger(timeslot_end),
             None,
         );
 
-        // (radio.disabled) -> (egu.trigger(timeslotEnd) -> SWI, timer.shutdown)
+        // egu.triggered(timeslot_end) -> radio.disable, timer.shutdown
         channels |= self.connect(
             6,
-            radio.events_disabled(),
-            egu.tasks_trigger(timeslot_end),
-            Some(timer.tasks_shutdown()),
-        );
-        self.include_group(6);
-
-        // egu.triggered(timeout) -> radio.disable, timer.shutdown
-        channels |= self.connect(
-            7,
-            egu.events_triggered(timeout),
+            egu.events_triggered(timeslot_end),
             radio.tasks_disable(),
             Some(timer.tasks_shutdown()),
         );
 
+        // radio.disabled -> (radio.txen, group.dis)
+        channels |= self.connect(
+            7,
+            radio.events_disabled(),
+            radio.tasks_txen(),
+            Some(task_group_disable),
+        );
+        self.include_group(7);
+
         self.enable_channels(channels);
     }
 
-    pub(crate) fn configure_peripheral_tx_ack(&mut self, _radio: &mut YipRadio, _egu: &mut YipEgu) {
-        let radio = _radio.regs();
+    pub(crate) fn configure_peripheral_tx_ack(&mut self, _egu: &mut EguDriver) {
+        let radio = pac::RADIO;
         let egu = _egu.regs();
 
-        self.disable();
+        self.clear();
 
         let channels = self.connect(
             0,
             radio.events_disabled(),
-            egu.tasks_trigger(YipTrigger::Disabled as usize),
+            egu.tasks_trigger(Trigger::TimeslotEnd as usize),
             None,
         );
 
@@ -332,19 +318,8 @@ impl<'d> YipPpi<'d> {
     }
 }
 
-impl Drop for YipPpi<'_> {
+impl Drop for PpiDriver {
     fn drop(&mut self) {
-        let ppi = embassy_nrf::pac::PPI;
-
-        self.disable();
-
-        for channel in &self.channels {
-            let number = channel.number();
-            ppi.ch(number).eep().write_value(0);
-            ppi.ch(number).tep().write_value(0);
-            ppi.fork(number).tep().write_value(0);
-        }
-
-        ppi.chg(self.group.number()).write(|_| ());
+        self.clear_all();
     }
 }

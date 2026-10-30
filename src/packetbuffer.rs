@@ -1,33 +1,27 @@
-use core::marker::PhantomData;
-
 use crate::config::*;
-use crate::header::{DownHeader, UpHeader, YipHeader, YipPayload, YipRoleHeader};
+use crate::payload::Payload;
 use crate::pdu::{PduByte0, PduByte1};
-use crate::role::YipRoleStack;
+use crate::role::private::RoleHeader;
 
 #[repr(C)]
-pub(crate) struct YipPacketBuffer<R> {
+pub(crate) struct PacketBuffer {
     pdu0: PduByte0,
     pub(crate) pdu1: PduByte1,
     data: [u8; YIP_SUB_PACKET_SIZE],
-
-    _role: PhantomData<R>,
 }
 
-impl<R: YipRoleHeader> YipPacketBuffer<R> {
-    pub(crate) fn write_header(&mut self, header: R::TxHeader) -> Result<BodyWriter<'_, R>, ()> {
-        self.write(header)?;
-        Ok(BodyWriter { buffer: self })
+impl PacketBuffer {
+    pub(crate) fn write_header<R: RoleHeader>(&mut self, header: R::TxHeader) -> BodyWriter<'_> {
+        self.write(header);
+        BodyWriter { buffer: self }
     }
 
-    pub(crate) fn read_header(&mut self) -> Result<(R::RxHeader, BodyReader<'_, R>), ()> {
-        let mut header = R::RxHeader::new();
+    pub(crate) fn read_header<R: RoleHeader>(
+        &mut self,
+    ) -> Result<(R::RxHeader, BodyReader<'_>), ()> {
         let received = self.data.get(..self.len()).ok_or(())?;
         let bytes = received.get(..R::RxHeader::SIZE).ok_or(())?;
-
-        if header.copy(bytes) != R::RxHeader::SIZE {
-            return Err(());
-        }
+        let header = R::RxHeader::decode(bytes)?;
 
         Ok((
             header,
@@ -37,16 +31,19 @@ impl<R: YipRoleHeader> YipPacketBuffer<R> {
             },
         ))
     }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_len(&mut self, len: usize) {
+        self.pdu0.set_length(len as u8);
+    }
 }
 
-impl<R> YipPacketBuffer<R> {
+impl PacketBuffer {
     pub(crate) const fn new() -> Self {
         Self {
             pdu0: PduByte0::new(),
             pdu1: PduByte1::new(),
             data: [0; YIP_SUB_PACKET_SIZE],
-
-            _role: PhantomData,
         }
     }
 
@@ -58,17 +55,19 @@ impl<R> YipPacketBuffer<R> {
         YIP_SUB_PACKET_SIZE - self.pdu0.length() as usize
     }
 
-    fn write<T: YipPayload>(&mut self, value: T) -> Result<(), ()> {
+    fn write<T: Payload>(&mut self, value: T) {
         let start = self.pdu0.length() as usize;
-        let end = start.checked_add(value.encoded_len()).ok_or(())?;
+        let end = start + T::SIZE;
+        assert!(
+            end <= YIP_SUB_PACKET_SIZE,
+            "end must be smaller than sub packet size"
+        );
 
-        let destination = self.data.get_mut(start..end).ok_or(())?;
-        value.encode_into(destination);
-
+        value.encode(&mut self.data[start..end]);
         self.pdu0.set_length(end as u8);
-        Ok(())
     }
 
+    #[allow(dead_code)]
     fn read(&self, dst: &mut [u8], start: usize, end: usize) -> Result<(), ()> {
         dst.copy_from_slice(&self.data[start..end]);
         Ok(())
@@ -76,73 +75,51 @@ impl<R> YipPacketBuffer<R> {
 
     pub(crate) fn clear(&mut self) {
         self.pdu0.set_length(0);
-        self.pdu1.set_more(false);
+        self.pdu1.set_packet_type(crate::pdu::PacketType::Start);
     }
 
-    pub(crate) fn as_ptr(&self) -> *const u8 {
-        core::ptr::from_ref(self).cast()
-    }
+    // pub(crate) fn as_ptr(&self) -> *const u8 {
+    //     core::ptr::from_ref(self).cast()
+    // }
 
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         core::ptr::from_mut(self).cast()
     }
+
+    pub(crate) fn data(&self) -> &[u8] {
+        &self.data[0..self.len()]
+    }
 }
 
-pub(crate) struct BodyReader<'a, R> {
-    buffer: &'a mut YipPacketBuffer<R>,
+pub(crate) struct BodyReader<'a> {
+    buffer: &'a mut PacketBuffer,
     start: usize,
 }
 
-impl<'a, R: YipRoleHeader> BodyReader<'a, R> {
+impl<'a> BodyReader<'a> {
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.buffer.data[self.start..self.buffer.len()]
     }
 }
 
-pub(crate) struct BodyWriter<'a, R> {
-    buffer: &'a mut YipPacketBuffer<R>,
+pub(crate) struct BodyWriter<'a> {
+    buffer: &'a mut PacketBuffer,
 }
 
-impl<'a, R> BodyWriter<'a, R> {
-    pub(crate) fn write<T: YipPayload>(&mut self, value: T) -> Result<(), ()> {
-        self.buffer.write(value)
+impl<'a> BodyWriter<'a> {
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8]) {
+        let start = self.buffer.len();
+        let end = start + bytes.len();
+
+        self.buffer.data[start..end].copy_from_slice(bytes);
+        self.buffer.set_len(end);
     }
 
-    pub(crate) fn free_size(&mut self) -> usize {
+    pub(crate) fn write<T: Payload>(&mut self, value: T) {
+        self.buffer.write(value);
+    }
+
+    pub(crate) fn free_size(&self) -> usize {
         self.buffer.free_size()
-    }
-}
-
-pub(crate) struct YipControlPacket {
-    pub(crate) refslot: u32,
-    pub(crate) slotsize_ticks: u32,
-    pub(crate) pipes: u8,
-}
-
-impl YipPayload for YipControlPacket {
-    fn encoded_len(&self) -> usize {
-        use core::mem::size_of_val;
-
-        size_of_val(&self.refslot) + size_of_val(&self.slotsize_ticks) + size_of_val(&self.pipes)
-    }
-
-    fn encode_into(self, dst: &mut [u8]) {
-        dst[0..4].copy_from_slice(&self.refslot.to_le_bytes());
-        dst[4..8].copy_from_slice(&self.slotsize_ticks.to_le_bytes());
-        dst[8] = self.pipes;
-    }
-}
-
-impl<R: YipRoleHeader> TryFrom<BodyReader<'_, R>> for YipControlPacket {
-    type Error = ();
-
-    fn try_from(reader: BodyReader<'_, R>) -> Result<Self, Self::Error> {
-        let bytes: &[u8; 9] = reader.as_slice().try_into().map_err(|_| ())?;
-
-        Ok(Self {
-            refslot: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            slotsize_ticks: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-            pipes: bytes[8],
-        })
     }
 }

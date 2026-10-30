@@ -1,14 +1,14 @@
 use crate::link::LinkState;
-use crate::packet::{ConnWaiter, PacketHandle, PacketReceiver, PacketSender, YipSessionEndpoints};
+use crate::packet::{ConnWaiter, PacketHandle, RxReceiver, TxSender, YipSessionEndpoints};
 
-pub struct YipSession<'q, 'p, const W: usize> {
-    reader: YipReader<'q, 'p, W>,
-    writer: YipWriter<'q, 'p, W>,
-    conn: YipConnectionListener<'q>,
+pub struct YipSession {
+    reader: YipReader,
+    writer: YipWriter,
+    conn: YipConnectionListener,
 }
 
-impl<'q, 'p, const W: usize> YipSession<'q, 'p, W> {
-    pub fn new(endpoints: YipSessionEndpoints<'q, 'p, W>) -> Self {
+impl YipSession {
+    pub fn new(endpoints: YipSessionEndpoints) -> Self {
         Self {
             reader: YipReader {
                 receiver: endpoints.rx,
@@ -22,32 +22,26 @@ impl<'q, 'p, const W: usize> YipSession<'q, 'p, W> {
         }
     }
 
-    pub fn split(
-        self,
-    ) -> (
-        YipReader<'q, 'p, W>,
-        YipWriter<'q, 'p, W>,
-        YipConnectionListener<'q>,
-    ) {
+    pub fn split(self) -> (YipReader, YipWriter, YipConnectionListener) {
         (self.reader, self.writer, self.conn)
     }
 }
 
-pub struct YipReader<'q, 'p, const W: usize> {
-    receiver: PacketReceiver<'q, 'p, W>,
+pub struct YipReader {
+    receiver: RxReceiver,
 }
 
-impl<'q, 'p, const W: usize> YipReader<'q, 'p, W> {
-    pub async fn read(&self) -> PacketHandle<'p, W> {
-        self.receiver.receive().await
+impl YipReader {
+    pub async fn read(&self) -> PacketHandle {
+        PacketHandle(self.receiver.receive().await)
     }
 }
 
-pub struct YipWriter<'q, 'p, const W: usize> {
-    sender: PacketSender<'q, 'p, W>,
+pub struct YipWriter {
+    sender: TxSender,
 }
 
-impl<'q, 'p, const W: usize> YipWriter<'q, 'p, W> {
+impl YipWriter {
     pub fn try_write(&mut self, data: &[u8]) -> Result<(), ()> {
         let mut packet = self.sender.try_acquire().ok_or(())?;
 
@@ -69,11 +63,11 @@ impl<'q, 'p, const W: usize> YipWriter<'q, 'p, W> {
     }
 }
 
-pub struct YipConnectionListener<'q> {
-    waiter: ConnWaiter<'q>,
+pub struct YipConnectionListener {
+    waiter: ConnWaiter,
 }
 
-impl<'q> YipConnectionListener<'q> {
+impl<'s> YipConnectionListener {
     pub async fn wait(&self) -> LinkState {
         self.waiter.wait().await
     }
@@ -88,7 +82,7 @@ impl<'q> YipConnectionListener<'q> {
 
     pub async fn wait_connected(&self) {
         loop {
-            if self.waiter.wait().await == LinkState::Connected {
+            if matches!(self.waiter.wait().await, LinkState::Connected(_)) {
                 break;
             }
         }

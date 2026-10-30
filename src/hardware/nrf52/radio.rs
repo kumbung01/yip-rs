@@ -10,7 +10,7 @@ use embassy_nrf::{
         radio::{
             Radio,
             regs::Datawhiteiv,
-            vals::{self, S1incl, Txpower},
+            vals::{self, Mode, Ru, S1incl, Txpower},
         },
     },
     peripherals,
@@ -20,6 +20,8 @@ use embassy_nrf::{
 pub(crate) struct RadioEvents {
     pub crc_ok: bool,
     pub disabled: bool,
+    pub txready: bool,
+    pub rxready: bool,
 }
 
 pub(crate) struct YipRadio {
@@ -29,6 +31,7 @@ pub(crate) struct YipRadio {
     radio: Peri<'static, peripherals::RADIO>,
 }
 
+#[allow(dead_code)]
 impl YipRadio {
     pub fn regs(&mut self) -> Radio {
         pac::RADIO
@@ -49,6 +52,7 @@ impl YipRadio {
         self.set_short();
         self.set_radio_rampup_mode();
 
+        #[cfg(feature = "defmt")]
         defmt::debug!("radio setup complete");
     }
 
@@ -57,17 +61,14 @@ impl YipRadio {
     }
 
     fn set_radio_frequency(&mut self) {
-        // set radio to 2Mbit
         pac::RADIO.mode().write(|w| w.set_mode(RADIO_BITRATE));
     }
 
     fn configure_crc(&mut self) {
         let radio = pac::RADIO;
 
-        // CRC 초기값
         radio.crcinit().write(|w| w.set_crcinit(0xFFFF));
 
-        // CRC 길이와 주소 포함 여부
         radio.crccnf().write(|w| {
             w.set_len(RADIO_CRC_LEN_MODE);
             w.set_skipaddr(RADIO_CRC_SKIPADDR);
@@ -141,6 +142,7 @@ impl YipRadio {
     }
 
     pub fn set_rxaddress(&mut self, pipe: u8) {
+        debug!("setting address to {}", pipe);
         pac::RADIO
             .rxaddresses()
             .write_value(Rxaddresses(1u32 << pipe));
@@ -149,6 +151,13 @@ impl YipRadio {
     pub fn set_channel(&mut self, channel: u8) {
         self.channel = channel;
         pac::RADIO.frequency().write(|w| w.set_frequency(channel));
+        self.set_whiten_seed(channel);
+    }
+
+    fn set_whiten_seed(&mut self, channel: u8) {
+        pac::RADIO
+            .datawhiteiv()
+            .write_value(Datawhiteiv(channel as u32));
     }
 
     pub(crate) fn take_interrupt_events(&mut self) -> RadioEvents {
@@ -165,23 +174,25 @@ impl YipRadio {
             events.disabled = true;
         }
 
+        if radio.events_txready().read() != 0 {
+            radio.events_txready().write_value(0);
+            events.txready = true;
+        }
+
+        if radio.events_rxready().read() != 0 {
+            radio.events_rxready().write_value(0);
+            events.rxready = true;
+        }
+
         events
     }
 
-    #[allow(dead_code)]
     pub fn irq_set_disabled(&mut self, set: bool) {
         pac::RADIO.intenset().write(|w| w.set_disabled(set));
     }
 
-    #[allow(dead_code)]
     pub fn irq_set_crcok(&mut self, set: bool) {
         pac::RADIO.intenset().write(|w| w.set_crcok(set));
-    }
-
-    pub fn set_whiten_seed(&mut self, channel: u8) {
-        pac::RADIO
-            .datawhiteiv()
-            .write_value(Datawhiteiv(channel as u32));
     }
 
     pub fn get_rssi_sample(&mut self) -> u8 {
@@ -193,8 +204,8 @@ impl YipRadio {
     }
 
     #[allow(dead_code)]
-    pub fn set_tx_power(&mut self, power: Txpower) {
-        pac::RADIO.txpower().write(|w| w.set_txpower(power));
+    pub fn set_tx_power(&mut self, tx_power: Txpower) {
+        pac::RADIO.txpower().write(|w| w.set_txpower(tx_power));
     }
 
     #[allow(dead_code)]
@@ -204,3 +215,26 @@ impl YipRadio {
         pac::RADIO.events_disabled().write_value(0);
     }
 }
+
+pub(crate) const RADIO_BITRATE: Mode = match YIP_RADIO_BITRATE {
+    RadioBitrate::_1mbit => Mode::Ble1mbit,
+    RadioBitrate::_2mbit => Mode::Ble2mbit,
+};
+
+pub(crate) const RADIO_RAMPUP_MODE: Ru = match YIP_RADIO_RAMPUP_MODE {
+    RadioRampup::Normal => Ru::Default,
+    RadioRampup::Fast => Ru::Fast,
+};
+
+pub(crate) const TX_POWER_INITIAL_INDEX: usize = index_of(TX_POWER, TX_POWER_INITIAL_DB);
+
+pub(crate) const TX_POWER: &[Txpower] = &[
+    Txpower::Neg16dBm,
+    Txpower::Neg12dBm,
+    Txpower::Neg8dBm,
+    Txpower::Neg4dBm,
+    Txpower::_0dBm,
+    Txpower::Pos2dBm,
+    Txpower::Pos3dBm,
+    Txpower::Pos4dBm,
+];

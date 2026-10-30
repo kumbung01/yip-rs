@@ -1,4 +1,4 @@
-use bitfield_struct::bitfield;
+use bitfield_struct::{bitenum, bitfield};
 
 #[bitfield(u8)]
 pub(crate) struct PduByte0 {
@@ -16,18 +16,39 @@ impl PduByte0 {
 
 #[bitfield(u8)]
 pub(crate) struct PduByte1 {
-    pub ctrl: bool,
-    pub more: bool,
     pub sn: bool,
     pub nesn: bool,
 
-    #[bits(4)]
-    __: u8,
+    #[bits(2)]
+    pub packet_type: PacketType,
+    pub md: bool,
+
+    #[bits(3)]
+    pub reserved: u8,
 }
 
 impl PduByte1 {
-    pub const S1_BITS: u8 = PduByte1::CTRL_BITS as u8
-        + PduByte1::MORE_BITS as u8
-        + PduByte1::SN_BITS as u8
-        + PduByte1::NESN_BITS as u8;
+    pub const S1_BITS: u8 = 8 - PduByte1::RESERVED_BITS as u8;
+}
+
+#[bitenum]
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub(crate) enum PacketType {
+    Start = 0,
+    Continue = 1,
+    Control = 2,
+
+    #[fallback]
+    Invalid = 7,
+}
+
+#[repr(u8)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub(crate) enum PacketKind {
+    Empty,
+    Data,
+    Control,
 }

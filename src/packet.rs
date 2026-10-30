@@ -1,120 +1,131 @@
+use core::ops::{Deref, DerefMut};
+use embassy_sync::semaphore::WaitQueueFull;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
+use crate::config::*;
 use crate::link::LinkState;
-use crate::linkedlist::{
-    ItemHandle, PoolLinkedList, PoolStorage, PoolView, Receiver, Reset, Sender,
-};
-
-use crate::config::YIP_PACKET_SIZE;
+use crate::linkedlist::*;
 
 pub(crate) type ConnSignal = Signal<CriticalSectionRawMutex, LinkState>;
-pub(crate) struct ConnSignaler<'a> {
-    signal: &'a ConnSignal,
+pub(crate) struct ConnSignaler {
+    pub(crate) signal: &'static ConnSignal,
 }
 
-pub(crate) struct ConnWaiter<'a> {
-    signal: &'a ConnSignal,
+pub(crate) struct ConnWaiter {
+    pub(crate) signal: &'static ConnSignal,
 }
 
-impl<'a> ConnSignaler<'a> {
+impl ConnSignaler {
     pub(crate) fn signal(&self, state: LinkState) {
         self.signal.signal(state);
     }
 }
 
-impl<'a> ConnWaiter<'a> {
+impl ConnWaiter {
     pub(crate) async fn wait(&self) -> LinkState {
         self.signal.wait().await
     }
 }
 
-pub type PacketPoolStorage<const S: usize, const W: usize> =
-    PoolStorage<Packet, CriticalSectionRawMutex, S, W>;
+static_pool!(
+    pub TxPacketPool: TxPacketStorage,
+    init: TxPool::new([const {core::cell::UnsafeCell::new(Packet::new())}; YIP_POOL_SIZE]),
+);
 
-impl<const S: usize, const W: usize> PacketPoolStorage<S, W> {
-    pub fn new_packet() -> Self {
-        Self::new(Packet::new)
+static_pool!(
+    pub RxPacketPool: RxPacketStorage,
+    init: RxPool::new([const {core::cell::UnsafeCell::new(Packet::new())}; YIP_POOL_SIZE]),
+);
+
+type TxPacketStorage = TxPool<Packet, CriticalSectionRawMutex, YIP_POOL_SIZE, YIP_MAX_LINK_COUNT>;
+type RxPacketStorage = RxPool<Packet, CriticalSectionRawMutex, YIP_POOL_SIZE>;
+
+pub struct PacketHandle(pub(crate) ItemHandle<RxPacketPool>);
+
+impl Deref for PacketHandle {
+    type Target = Packet;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
     }
 }
 
-pub type PacketPoolView<'p, const W: usize> = PoolView<'p, Packet, CriticalSectionRawMutex, W>;
-pub type PacketHandle<'p, const W: usize> = ItemHandle<'p, Packet, CriticalSectionRawMutex, W>;
-pub(crate) type PacketLinkedList<'p, const W: usize> =
-    PoolLinkedList<'p, Packet, CriticalSectionRawMutex, W>;
-pub(crate) type PacketSender<'q, 'p, const W: usize> =
-    Sender<'q, 'p, Packet, CriticalSectionRawMutex, W>;
-pub(crate) type PacketReceiver<'q, 'p, const W: usize> =
-    Receiver<'q, 'p, Packet, CriticalSectionRawMutex, W>;
-
-pub struct YipLinkEndpoints<'q, 'p, const W: usize> {
-    pub(crate) conn: ConnSignaler<'q>,
-    pub(crate) rx: PacketSender<'q, 'p, W>,
-    pub(crate) tx: PacketReceiver<'q, 'p, W>,
+impl DerefMut for PacketHandle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
+    }
 }
 
-pub struct YipSessionEndpoints<'q, 'p, const W: usize> {
-    pub(crate) conn: ConnWaiter<'q>,
-    pub(crate) rx: PacketReceiver<'q, 'p, W>,
-    pub(crate) tx: PacketSender<'q, 'p, W>,
+pub(crate) type TxList = PoolLinkedList<TxPacketPool, CriticalSectionRawMutex>;
+pub(crate) type RxList = PoolLinkedList<RxPacketPool, CriticalSectionRawMutex>;
+
+pub(crate) type TxSender = Sender<'static, TxList>;
+pub(crate) type TxReceiver = Receiver<'static, TxList>;
+pub(crate) type RxSender = Sender<'static, RxList>;
+pub(crate) type RxReceiver = Receiver<'static, RxList>;
+
+pub struct YipSessionEndpoints {
+    pub(crate) conn: ConnWaiter,
+    pub(crate) rx: RxReceiver,
+    pub(crate) tx: TxSender,
 }
 
-pub struct PacketChannel<'p, const W: usize> {
-    conn: ConnSignal,
-    rx: PacketLinkedList<'p, W>,
-    tx: PacketLinkedList<'p, W>,
+pub struct YipLinkEndpoints {
+    pub(crate) conn: ConnSignaler,
+    pub(crate) rx: RxSender,
+    pub(crate) tx: TxReceiver,
 }
 
-impl<'p, const W: usize> PacketChannel<'p, W> {
-    pub fn new(pool: &'p PacketPoolView<'p, W>) -> Self {
+impl YipLinkEndpoints {
+    pub(crate) fn clear(&self) {
+        self.rx.queue.clear();
+        self.tx.queue.clear();
+    }
+}
+
+pub struct PacketChannels<const W: usize> {
+    conn: [ConnSignal; W],
+    rx: [RxList; W],
+    tx: [TxList; W],
+}
+
+impl<const W: usize> PacketChannels<W> {
+    pub const fn new() -> Self {
         Self {
-            conn: ConnSignal::new(),
-            rx: PoolLinkedList::new(pool),
-            tx: PoolLinkedList::new(pool),
+            conn: [const { ConnSignal::new() }; W],
+            rx: [const { RxList::new() }; W],
+            tx: [const { TxList::new() }; W],
         }
     }
 
-    pub fn split(&mut self) -> (YipLinkEndpoints<'_, 'p, W>, YipSessionEndpoints<'_, 'p, W>) {
-        (
-            YipLinkEndpoints {
-                conn: ConnSignaler { signal: &self.conn },
-                rx: self.rx.sender(),
-                tx: self.tx.receiver(),
-            },
-            YipSessionEndpoints {
-                conn: ConnWaiter { signal: &self.conn },
-                rx: self.rx.receiver(),
-                tx: self.tx.sender(),
-            },
-        )
+    #[allow(dead_code)]
+    pub fn session_endpoints(&'static self) -> [YipSessionEndpoints; W] {
+        core::array::from_fn(|i| self.session_ep(i))
     }
-}
 
-pub struct PacketChannels<'p, const W: usize> {
-    channels: [PacketChannel<'p, W>; W],
-}
-
-impl<'p, const W: usize> PacketChannels<'p, W> {
-    pub fn new(pool: &'p PacketPoolView<'p, W>) -> Self {
-        Self {
-            channels: core::array::from_fn(|_| PacketChannel::new(pool)),
+    pub fn session_ep(&'static self, i: usize) -> YipSessionEndpoints {
+        YipSessionEndpoints {
+            conn: ConnWaiter {
+                signal: &self.conn[i],
+            },
+            rx: self.rx[i].receiver(),
+            tx: self.tx[i].sender(),
         }
     }
 
-    pub fn endpoints(
-        &mut self,
-    ) -> (
-        [YipLinkEndpoints<'_, 'p, W>; W],
-        [YipSessionEndpoints<'_, 'p, W>; W],
-    ) {
-        let mut pairs = self.channels.each_mut().map(|channel| {
-            let (link, session) = channel.split();
-            (Some(link), Some(session))
-        });
+    #[allow(dead_code)]
+    pub fn link_endpoints(&'static self) -> [YipLinkEndpoints; W] {
+        core::array::from_fn(|i| self.link_ep(i))
+    }
 
-        let links = core::array::from_fn(|i| pairs[i].0.take().unwrap());
-        let sessions = core::array::from_fn(|i| pairs[i].1.take().unwrap());
-
-        (links, sessions)
+    pub fn link_ep(&'static self, n: usize) -> YipLinkEndpoints {
+        YipLinkEndpoints {
+            conn: ConnSignaler {
+                signal: &self.conn[n],
+            },
+            rx: self.rx[n].sender(),
+            tx: self.tx[n].receiver(),
+        }
     }
 }
 
@@ -131,7 +142,7 @@ impl Packet {
         }
     }
 
-    pub(crate) fn set(&mut self, data: &[u8]) -> Result<(), ()> {
+    pub fn set(&mut self, data: &[u8]) -> Result<(), ()> {
         if data.len() > YIP_PACKET_SIZE {
             return Err(());
         }
@@ -155,8 +166,12 @@ impl Packet {
         Ok(())
     }
 
-    pub(crate) fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         &self.data[..self.len as usize]
+    }
+
+    pub(crate) fn remaining_capacity(&self) -> usize {
+        &self.data.len() - self.len as usize
     }
 }
 
@@ -166,14 +181,27 @@ impl Reset for Packet {
     }
 }
 
-pub(crate) struct CurrentPacket<'p, const W: usize> {
-    packet: PacketHandle<'p, W>,
+impl AsRef<[u8]> for Packet {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+pub(crate) struct CurrentPacket<P: StaticPool> {
+    packet: ItemHandle<P>,
     copied: usize,
     in_flight_len: usize,
 }
 
-impl<'p, const W: usize> CurrentPacket<'p, W> {
-    pub(crate) const fn new(packet: PacketHandle<'p, W>) -> Self {
+pub(crate) type CurrentTx = CurrentPacket<TxPacketPool>;
+pub(crate) type CurrentRx = CurrentPacket<RxPacketPool>;
+
+impl<P> CurrentPacket<P>
+where
+    P: StaticPool,
+    P::Storage: PoolAccess<Item = Packet>,
+{
+    pub(crate) const fn new(packet: ItemHandle<P>) -> Self {
         Self {
             packet: packet,
             copied: 0,
@@ -181,8 +209,12 @@ impl<'p, const W: usize> CurrentPacket<'p, W> {
         }
     }
 
+    pub(crate) fn is_new(&self) -> bool {
+        self.copied == 0
+    }
+
     pub(crate) fn get_fragment(&mut self, max_len: usize) -> &[u8] {
-        let data = self.packet.as_slice();
+        let data = self.packet.as_ref();
         let start = self.copied.min(data.len());
         let end = start.saturating_add(max_len).min(data.len());
 
@@ -192,7 +224,7 @@ impl<'p, const W: usize> CurrentPacket<'p, W> {
     }
 
     pub(crate) fn commit_fragment(&mut self) -> usize {
-        let total_len = self.packet.as_slice().len();
+        let total_len = self.total_len();
 
         self.copied = self
             .copied
@@ -210,18 +242,68 @@ impl<'p, const W: usize> CurrentPacket<'p, W> {
     }
 
     pub(crate) fn append_from_slice(&mut self, slice: &[u8]) -> Result<(), ()> {
-        self.packet.append(slice)
+        let end = self.copied.checked_add(slice.len()).ok_or(())?;
+        if end > self.total_len() {
+            debug!("append failed: total: {}, end: {}", self.packet.len, end);
+            return Err(());
+        }
+
+        self.packet.data[self.copied..end].copy_from_slice(slice);
+        self.copied = end;
+        Ok(())
     }
 
-    pub(crate) fn packet(self) -> PacketHandle<'p, W> {
+    pub(crate) fn packet(self) -> ItemHandle<P> {
         self.packet
+    }
+
+    pub(crate) fn total_len(&self) -> usize {
+        self.packet.len as usize
+    }
+
+    pub(crate) fn copied(&self) -> usize {
+        self.copied
     }
 
     pub(crate) fn remaining_len(&self) -> usize {
         self.packet.as_slice().len() - self.copied
     }
 
-    pub(crate) fn is_more(&self) -> bool {
-        self.remaining_len() > self.in_flight_len
+    pub(crate) fn remaining_capacity(&self) -> usize {
+        self.packet.remaining_capacity()
+    }
+
+    pub(crate) fn remain_before_tx(&self) -> usize {
+        self.packet.as_slice().len() - self.copied
+    }
+
+    pub(crate) fn remain_after_tx(&self) -> usize {
+        self.remain_before_tx() - self.in_flight_len
+    }
+
+    pub(crate) fn is_ongoing(&self) -> bool {
+        assert!(
+            self.total_len() >= self.copied,
+            "total length must be >= copied"
+        );
+        self.total_len() != self.copied
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.packet.clear();
+        self.copied = 0;
+        self.in_flight_len = 0;
+    }
+
+    pub(crate) fn set_total_len(&mut self, total_len: usize) -> Result<(), ()> {
+        // we don't panic here, since data can be corrupted
+        if total_len > YIP_PACKET_SIZE {
+            debug!("invalid packet size({})", total_len);
+            return Err(());
+        }
+
+        self.packet.len = u8::try_from(total_len).map_err(|_| ())?;
+
+        Ok(())
     }
 }

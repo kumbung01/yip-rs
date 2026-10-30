@@ -5,12 +5,22 @@ target = "thumbv7em-none-eabihf"
 runner = [
     "probe-rs", "run",
     "--chip", "nRF52840_xxAA",
-    "--no-location",
+    "--probe", "1366:1051:001050209127",
+    "--log-format", "[{L}] {m:<50}: {s}",
+    "--no-location"
 ]
-rustflags = [
-    "-C", "link-arg=-Tlink.x",
-    "-C", "link-arg=-Tdefmt.x",
+rustflags = "-C link-arg=-Tlink.x -C link-arg=-Tdefmt.x"
+
+[target.thumbv8m.main-none-eabihf]
+runner = [
+    "probe-rs", "run",
+    "--chip", "nRF54LM20A",
+    "--probe", "1366:1068:001051865026",
+    "--log-format", "[{L}] {m:<50}: {s}",
+    "--no-location"
 ]
+rustflags = "-C link-arg=-Tlink.x -C link-arg=-Tdefmt.x"
 
 [env]
 DEFMT_LOG = "debug"
+DEFMT_RTT_BUFFER_SIZE = "4096"

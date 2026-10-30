@@ -1,316 +1,549 @@
-use crate::header::{DownHeader, UpHeader, YipRoleHeader};
-use crate::packetbuffer::{YipControlPacket, YipPacketBuffer};
+use core::cell::RefCell;
+use embassy_nrf::interrupt::{self};
+use embassy_nrf::pac;
+use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
+
+use crate::link::LinkSubstate::{self, Normal};
+use crate::packet::YipSessionEndpoints;
+use crate::packetbuffer::PacketBuffer;
+use crate::payload::{ControlCommand, ControlHeader, DownHeader, Payload, SyncPacket, UpHeader};
+use crate::pdu::PacketKind;
+use crate::pdu::PacketType::{self, *};
 
 use crate::config::*;
-use crate::device::YipDevice;
-use crate::egu::YipTrigger;
+use crate::hardware::device::YipDevice;
+use crate::hardware::egu::Trigger;
+use crate::hardware::impl_yip_egu_handlers;
 use crate::hop::get_channel;
-use crate::link::{LinkState, RssiState, YipLink};
+use crate::link::{
+    Link,
+    LinkState::{self, *},
+};
 use crate::packet::CurrentPacket;
-use crate::role::{YipRole, YipRoleStack};
+use crate::packet::PacketChannels;
+use crate::role::private::*;
+use crate::signal::RssiState;
+
+struct Alive(u32);
+
+impl Alive {
+    fn is_timeout(&mut self, slot_now: u32) -> bool {
+        let limit_slots = TIMEOUT_LIMIT_US_CENTRAL.div_ceil(YIP_SLOTSIZE_US as u32);
+
+        if slot_now.wrapping_sub(self.0) >= limit_slots {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn update_alive(&mut self, slot_now: u32) {
+        self.0 = slot_now;
+    }
+}
+
+struct Slot {
+    pub link: Link,
+    pub rssi: RssiState,
+    pub alive: Alive,
+    pub txbuf: PacketBuffer,
+    pub pkind: PacketKind,
+}
+
+impl Slot {
+    fn reset(&mut self) {
+        self.link.reset();
+        self.rssi.reset();
+        self.alive = Alive(0);
+        self.txbuf.clear();
+        self.pkind = PacketKind::Empty;
+    }
+}
+
+pub fn start() {
+    IRQ_STACK.lock(|cell| {
+        cell.borrow_mut()
+            .as_mut()
+            .expect("stack not initialized")
+            .start();
+    });
+}
+
+pub fn stop() {
+    IRQ_STACK.lock(|cell| {
+        cell.borrow_mut()
+            .as_mut()
+            .expect("stack not initialized")
+            .stop();
+    });
+}
 
 pub struct YipCentral {
-    state: YipCentralState,
+    state: CentralState,
     turn: usize,
+    slots: [Slot; YIP_MAX_LINK_COUNT],
+    device: YipDevice<YipInterruptHandler>,
+    rxbuf: PacketBuffer,
 }
 
 #[repr(u8)]
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-enum YipCentralState {
+enum CentralState {
     Idle,
     Tx,
 }
 
-impl YipRole for YipCentral {}
+static CHANNELS: PacketChannels<YIP_MAX_LINK_COUNT> = PacketChannels::new();
 
-impl YipRoleHeader for YipCentral {
+pub(crate) static IRQ_STACK: Mutex<CriticalSectionRawMutex, RefCell<Option<YipCentral>>> =
+    Mutex::new(RefCell::new(None));
+
+pub struct YipInterruptHandler;
+
+impl_yip_egu_handlers!();
+
+impl RoleHeader for YipCentral {
     type TxHeader = DownHeader;
     type RxHeader = UpHeader;
 }
 
-impl<'q, 'p, const W: usize> YipRoleStack<'q, 'p, W> for YipCentral {
-    fn new() -> Self {
-        Self {
-            state: YipCentralState::Idle,
-            turn: 0,
-        }
+impl YipCentral {
+    pub(crate) fn start(&mut self) {
+        self.setup();
+        self.device.clock.start_central();
+        self.prepare_tx();
     }
 
-    fn setup(&mut self, device: &mut YipDevice, _: u8) {
+    pub(crate) fn stop(&mut self) {
         let YipDevice {
             radio,
-            timer,
+            clock,
+            ppi,
+            egu,
+            ..
+        } = &mut self.device;
+
+        ppi.clear();
+        clock.stop_central();
+        radio.disable();
+        egu.clear_all();
+
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            slot.reset();
+            CHANNELS.link_ep(i).clear();
+        }
+
+        self.state = CentralState::Idle;
+    }
+
+    pub fn setup(&mut self) {
+        let YipDevice {
+            clock,
             ppi,
             egu,
             context,
             ..
-        } = device;
-
+        } = &mut self.device;
+        #[cfg(feature = "defmt")]
         defmt::debug!("central setup");
 
-        context.set_slotsize();
-        ppi.configure_central(radio, timer, egu);
-        timer.start();
+        context.slot_ticks = YIP_SLOTSIZE_US as u32;
+        ppi.configure_central(clock, egu);
+        self.state = CentralState::Idle;
     }
 
-    fn on_interrupt(
-        &mut self,
-        device: &mut YipDevice,
-        links: &mut [YipLink<'q, 'p, W>],
-        trigger: YipTrigger,
-        buffer: &mut YipPacketBuffer<Self>,
-        _unused_buf: &mut YipPacketBuffer<Self>,
-    ) {
-        use YipCentralState::*;
-        use YipTrigger::*;
+    fn on_interrupt(&mut self) {
+        use CentralState::*;
+        use Trigger::*;
 
-        defmt::debug!("state: {}, trig: {}", self.state, trigger);
-
-        match (self.state, trigger) {
-            (Idle, Start) => self.prepare_tx(device, links, buffer),
-            (Tx, TimeslotEnd) => self.timeslot_end(device, links, buffer),
-            _ => {}
+        if let Some(trigger) = self.device.egu.get_and_clear_triggered() {
+            // debug!("state {} trig {}", self.state, trigger);
+            match (self.state, trigger) {
+                (Idle, Start) => self.prepare_tx(),
+                (Tx, TimeslotEnd) => self.timeslot_end(),
+                _ => {}
+            }
         }
     }
 }
 
 impl YipCentral {
-    fn prepare_tx<'q, 'p, const LINK_COUNT: usize>(
-        &mut self,
-        device: &mut YipDevice,
-        links: &mut [YipLink<'q, 'p, LINK_COUNT>],
-        buffer: &mut YipPacketBuffer<Self>,
-    ) {
+    pub(crate) fn new(device: YipDevice<YipInterruptHandler>, pipes: usize) -> Self {
+        assert!(pipes <= YIP_MAX_LINK_COUNT);
+
+        let mut central = Self {
+            state: CentralState::Idle,
+            turn: 0,
+            device,
+            slots: core::array::from_fn(|_| Slot {
+                alive: Alive(0),
+                link: Link::new(),
+                rssi: RssiState::new(),
+                txbuf: PacketBuffer::new(),
+                pkind: PacketKind::Empty,
+            }),
+            rxbuf: PacketBuffer::new(),
+        };
+
+        central.device.set_pipes(pipes);
+
+        central
+    }
+
+    fn prepare_tx(&mut self) {
+        use crate::hardware::cyccnt;
         let YipDevice {
             radio,
-            timer,
+            clock,
             ppi,
             egu,
-            context,
+            context: ctx,
             ..
-        } = device;
+        } = &mut self.device;
 
         ppi.disable();
 
-        self.state = YipCentralState::Tx;
+        self.state = CentralState::Tx;
 
-        let timer_now = timer.cc(3).capture();
-        let timer_elapsed = timer_now.wrapping_sub(context.start);
-        let radio_margin_timer_ticks = us_to_timer_ticks(RADIO_MARGIN_US) as u32;
-        let slot_diff = (timer_elapsed + radio_margin_timer_ticks).div_ceil(SLOTSIZE_TIMER_TICKS);
-        let next_slot = context.refslot.wrapping_add(slot_diff);
-        let tx_start = context
-            .start
-            .wrapping_add(slot_diff.wrapping_mul(SLOTSIZE_TIMER_TICKS));
+        let start = cyccnt::start();
 
-        context.refslot = next_slot;
-        context.start = tx_start;
+        let slot_diff = clock.set_next_slot_central();
 
-        let pipes = links.len();
+        let slot_cycles = cyccnt::end(start);
 
-        self.turn = (self.turn + slot_diff as usize) % pipes;
+        ctx.refslot = ctx.refslot.wrapping_add(slot_diff);
 
-        let link = &mut links[self.turn];
+        self.turn = (self.turn + slot_diff as usize) % ctx.pipes;
 
-        buffer.clear();
+        let Slot {
+            link,
+            rssi,
+            txbuf: buf,
+            pkind: ptype,
+            ..
+        } = &mut self.slots[self.turn];
+        let ep = CHANNELS.link_ep(self.turn);
 
-        {
-            let mut body = buffer
-                .write_header(DownHeader {
-                    rssi: link.rssi.get(),
-                })
-                .expect("invalid header size");
+        let start = cyccnt::start();
 
-            if link.state == LinkState::Disconnected {
-                let control_packet = YipControlPacket {
-                    refslot: context.refslot,
-                    slotsize_ticks: context.slotsize_ticks,
-                    pipes: pipes as u8,
-                };
-                body.write(control_packet)
-                    .expect("fragment must fit in TX buffer");
-                buffer.pdu1.set_more(false);
-            } else {
-                if link.current_tx.is_none() {
-                    link.current_tx = link.endpoints.tx.try_receive().map(CurrentPacket::new);
-                }
+        buf.clear();
+        let mut body = buf.write_header::<Self>(DownHeader { rssi: rssi.get() });
 
-                if let Some(packet) = &mut link.current_tx {
-                    let available = body.free_size();
-                    let fragment = packet.get_fragment(available);
-
-                    body.write(fragment)
-                        .expect("fragment must fit in TX buffer");
-                    buffer.pdu1.set_more(packet.is_more());
-                }
-            }
+        if link.current_tx.is_none() {
+            link.current_tx = ep.tx.try_receive().map(CurrentPacket::new);
         }
 
-        buffer.pdu1.set_ctrl(link.state == LinkState::Disconnected);
-        buffer.pdu1.set_sn(link.sn);
-        buffer.pdu1.set_nesn(link.nesn);
+        let (packet_type, more_frag) = match link.state {
+            Disconnected => {
+                body.write(ControlHeader {
+                    command: ControlCommand::Sync,
+                });
+
+                body.write(SyncPacket {
+                    refslot: ctx.refslot,
+                    slot_ticks: ctx.slot_ticks,
+                    pipes: ctx.pipes as u8,
+                });
+                *ptype = PacketKind::Control;
+                (Control, link.current_tx.is_some())
+            }
+
+            Connected(substate) => match substate {
+                LinkSubstate::Normal => {
+                    if let Some(packet) = link.current_tx.as_mut() {
+                        let is_new = packet.is_new();
+                        if is_new {
+                            body.write_bytes(&[packet.total_len() as u8]);
+                        }
+
+                        let frag = packet.get_fragment(body.free_size());
+                        body.write_bytes(frag);
+
+                        *ptype = PacketKind::Data;
+
+                        (
+                            if is_new { Start } else { Continue },
+                            packet.remain_after_tx() > 0,
+                        )
+                    } else {
+                        body.write_bytes(&[0]);
+                        *ptype = PacketKind::Empty;
+                        (Start, false)
+                    }
+                }
+            },
+        };
+
+        let packet_cycles = cyccnt::end(start);
+
+        let pdu = &mut buf.pdu1;
+
+        pdu.set_packet_type(packet_type);
+
+        pdu.set_sn(link.sn);
+        pdu.set_nesn(link.nesn);
+        pdu.set_md(more_frag || ep.tx.queue.size() > 0);
+
+        let channel = get_channel(ctx.refslot as u32);
+        radio.set_channel(channel);
+
+        unsafe {
+            radio.set_packetptr(buf.as_mut_ptr());
+        }
+
+        let _timeout = clock.set_timeout_central(buf.len());
 
         radio.set_txaddress(self.turn as u8);
         radio.set_rxaddress(self.turn as u8);
 
-        let channel = get_channel(context.refslot as u32);
-        radio.set_channel(channel);
-        radio.set_whiten_seed(channel);
-
-        unsafe {
-            radio.set_packetptr(buffer.as_mut_ptr());
-        }
-
-        timer.cc(0).write(tx_start);
-
-        let timeout = tx_start.wrapping_add(context.calculate_timeout_timer(buffer.len()));
-        timer.cc(1).write(timeout);
-
-        egu.select_interrupt(YipTrigger::TimeslotEnd);
+        egu.select_interrupt(Trigger::TimeslotEnd);
 
         ppi.enable();
 
-        let timer_end = timer.cc(3).capture();
-
-        defmt::debug!(
-            "prepare_tx: now: {} start: {} timeout {} codetime {} us slot {:x} turn {} ch {} ",
-            timer_now,
-            tx_start,
-            timeout,
-            timer_ticks_to_us(timer_end.wrapping_sub(timer_now)),
-            next_slot,
-            self.turn,
-            channel
-        );
-        defmt::debug!(
-            "len {} ctrl {} sn {} nesn {} more {}",
-            buffer.len(),
-            buffer.pdu1.ctrl(),
-            buffer.pdu1.sn(),
-            buffer.pdu1.nesn(),
-            buffer.pdu1.more(),
-        );
+        //         #[cfg(feature = "defmt")]
+        //         {
+        //             debug!(
+        //                 "slot: {{{}, {}}}, packet: {{{}, {}}}",
+        //                 slot_cycles.as_cycles(),
+        //                 slot_cycles.as_us(),
+        //                 packet_cycles.as_cycles(),
+        //                 packet_cycles.as_us()
+        //             );
+        //
+        //             debug!(
+        //                 "now: {} start: {} timeout {} slot {} turn {} ch {} ",
+        //                 clock.get_now_central(),
+        //                 clock.get_start_ts(),
+        //                 _timeout,
+        //                 ctx.refslot,
+        //                 self.turn,
+        //                 channel
+        //             );
+        //
+        //             debug!(
+        //                 "len {} sn {} nesn {} type {}",
+        //                 buf.len(),
+        //                 buf.pdu1.sn(),
+        //                 buf.pdu1.nesn(),
+        //                 buf.pdu1.packet_type()
+        //             );
+        //         }
     }
 
-    fn timeslot_end<'q, 'p, const LINK_COUNT: usize>(
-        &mut self,
-        device: &mut YipDevice,
-        links: &mut [YipLink<'q, 'p, LINK_COUNT>],
-        buffer: &mut YipPacketBuffer<Self>,
-    ) {
+    fn timeslot_end(&mut self) {
         let YipDevice {
             radio,
-            timer,
-            context,
+            context: ctx,
             ppi,
             ..
-        } = device;
+        } = &mut self.device;
 
         ppi.disable();
 
-        let link = &mut links[self.turn];
+        let Slot {
+            link,
+            rssi,
+            alive,
+            txbuf: buf,
+            pkind,
+        } = &mut self.slots[self.turn];
+        let mut ep = CHANNELS.link_ep(self.turn);
 
         let events = radio.take_interrupt_events();
+
         if !events.crc_ok {
-            if link.state == LinkState::Connected {
+            if matches!(link.state, Connected(..)) {
                 if link.current_tx.is_some() {
                     link.tx_attempts += 1;
                 }
 
-                if link.check_timeout_central(context.start) == LinkState::Disconnected {
+                if alive.is_timeout(ctx.refslot) {
+                    link.state = Disconnected;
+                    ep.conn.signal(Disconnected);
                     link.reset();
-                    link.endpoints.conn.signal(LinkState::Disconnected);
+                    rssi.reset();
+                    ep.clear();
                 }
             }
 
-            let timer_now = timer.cc(3).capture();
-            defmt::debug!(
-                "slot timeout now {}, elapsed {} us",
-                timer_now,
-                timer_elapsed_us(timer_now, context.start)
-            );
-
-            let tx_end = timer.cc(2).read();
-
-            defmt::debug!(
-                "TX end: {}, duration: {} us",
-                tx_end,
-                timer_elapsed_us(tx_end, context.start)
-            );
-
-            self.prepare_tx(device, links, buffer);
+            self.prepare_tx();
             return;
         }
 
-        let my_nesn = link.nesn;
-        let my_sn = link.sn;
-        let my_crc = link.last_rx_crc;
+        #[cfg(feature = "nrf54lm20")]
+        {
+            debug!(
+                "rxaddr: {}, crcok: {}",
+                pac::TIMER10.cc(1).read(),
+                pac::TIMER10.cc(2).read()
+            );
 
-        let your_nesn = buffer.pdu1.nesn();
-        let your_sn = buffer.pdu1.sn();
-        let your_crc = radio.get_rxcrc();
+            pac::TIMER10.cc(1).write_value(0);
+            pac::TIMER10.cc(2).write_value(0);
+        }
 
-        let is_ctrl = buffer.pdu1.ctrl();
-        let is_more = buffer.pdu1.more();
+        alive.update_alive(ctx.refslot);
+        if link.state == Disconnected {
+            link.state = Connected(Normal);
+            ep.conn.signal(Connected(Normal));
+        }
 
         let rssi_sample = radio.get_rssi_sample();
-
-        // peripheral requested next sn, so tx succeded
-        if your_nesn != my_sn {
-            link.sn = !link.sn;
-            if let Some(packet) = &mut link.current_tx {
-                if packet.commit_fragment() == 0 {
-                    link.current_tx = None;
-                    // set event?
-                }
-            }
+        if buf.len() >= RADIO_RSSI_PADDING_BYTES {
+            rssi.update(rssi_sample);
         }
 
-        link.update_link_state(context.start);
-
-        if buffer.len() >= 4 {
-            link.rssi.update(rssi_sample);
-        }
-
-        let retransmit_payload = (your_crc == my_crc) && (your_sn == my_nesn);
-
+        // break if we have to retry
         'rx: {
-            if retransmit_payload {
+            // Peer SN differs from the expected SN, so this is a duplicate.
+            let duplicate_payload = buf.pdu1.sn() != link.nesn;
+
+            if duplicate_payload {
+                debug!("duplicate");
                 break 'rx;
             }
 
-            let Ok((_, body)) = buffer.read_header() else {
-                break 'rx;
+            let rx_packet_type = buf.pdu1.packet_type();
+
+            let Ok((_header, body)) = buf.read_header::<Self>() else {
+                debug!("invalid rx header");
+
+                self.prepare_tx();
+
+                return;
             };
 
-            if !is_ctrl {
-                if link.current_rx.is_none() {
-                    let Some(handle) = link.endpoints.rx.try_acquire() else {
-                        break 'rx;
+            match rx_packet_type {
+                Control => 'rx_control: {
+                    let Some((&byte, _data)) = body.as_slice().split_first() else {
+                        break 'rx_control;
                     };
-                    link.current_rx = Some(CurrentPacket::new(handle));
-                }
 
-                let Some(rx_packet) = &mut link.current_rx else {
-                    break 'rx;
-                };
+                    let Ok(command) = ControlCommand::try_from(byte) else {
+                        break 'rx_control;
+                    };
 
-                if rx_packet.append_from_slice(body.as_slice()).is_err() {
-                    break 'rx;
-                }
-
-                if !is_more {
-                    if let Some(rx_packet) = link.current_rx.take() {
-                        link.endpoints.rx.send(rx_packet.packet());
+                    match command {
+                        ControlCommand::Sync => {
+                            // noop, for now
+                            defmt::error!("peripheral should not send this");
+                        }
                     }
                 }
-            }
 
-            link.last_rx_crc = your_crc;
+                Start => 'rx_start: {
+                    let Some((&total_len, data)) = body.as_slice().split_first() else {
+                        debug!("missing packet length, drop");
+                        link.current_rx = None;
+                        break 'rx_start;
+                    };
+
+                    if total_len == 0 {
+                        debug!("empty packet, skip");
+                        link.current_rx = None;
+                        break 'rx;
+                    }
+
+                    let rx_packet = link
+                        .current_rx
+                        .take()
+                        .or_else(|| ep.rx.try_acquire().map(CurrentPacket::new));
+
+                    let Some(mut rx_packet) = rx_packet else {
+                        debug!("buf get fail, retry");
+                        break 'rx;
+                    };
+
+                    rx_packet.clear();
+
+                    if rx_packet.set_total_len(total_len as usize).is_err() {
+                        break 'rx_start;
+                    }
+
+                    if rx_packet.append_from_slice(data).is_err() {
+                        break 'rx_start;
+                    }
+
+                    if rx_packet.remaining_len() == 0 {
+                        ep.rx.send(rx_packet.packet());
+                    } else {
+                        link.current_rx = Some(rx_packet);
+                    }
+                }
+
+                Continue => 'rx_cont: {
+                    let data = body.as_slice();
+
+                    if data.is_empty() {
+                        debug!("{} data must not be empty!", Continue);
+                        link.current_rx = None;
+
+                        break 'rx_cont;
+                    }
+
+                    let Some(mut rx_packet) = link.current_rx.take() else {
+                        debug!("we must have packet here! skip this packet");
+                        break 'rx_cont;
+                    };
+
+                    if rx_packet.append_from_slice(data).is_err() {
+                        debug!("drop this packet");
+                        break 'rx_cont;
+                    }
+
+                    if rx_packet.remaining_len() == 0 {
+                        ep.rx.send(rx_packet.packet());
+                    } else {
+                        link.current_rx = Some(rx_packet);
+                    }
+                }
+
+                Invalid => {
+                    debug!("data has been corrupted, skip this packet");
+                }
+            };
+
             link.nesn = !link.nesn;
+
+            debug!("rx type {} len {}", rx_packet_type, buf.len());
+            debug!("rx data: {}", buf.data()[0..buf.len()]);
         }
 
-        self.prepare_tx(device, links, buffer);
+        'tx_commit: {
+            if *pkind == PacketKind::Empty {
+                break 'tx_commit;
+            }
+
+            // peripheral requested same sn, so tx failed
+            let tx_failed = buf.pdu1.nesn() == link.sn;
+
+            if tx_failed {
+                link.tx_attempts += 1;
+                break 'tx_commit;
+            }
+
+            link.sn = !link.sn;
+            link.tx_attempts = 0;
+
+            if *pkind == PacketKind::Data {
+                let tx_packet = link
+                    .current_tx
+                    .as_mut()
+                    .expect("packet must exists when Data");
+
+                if tx_packet.commit_fragment() == 0 {
+                    link.current_tx = None;
+                }
+            }
+        }
+
+        self.prepare_tx();
+    }
+
+    pub fn session_endpoints<const W: usize>() -> [YipSessionEndpoints; W] {
+        assert!(W <= YIP_MAX_LINK_COUNT);
+
+        core::array::from_fn(|i| CHANNELS.session_ep(i))
     }
 }

@@ -2,10 +2,11 @@ use core::{
     cell::{Cell, RefCell, UnsafeCell},
     future::poll_fn,
     marker::PhantomData,
-    mem::ManuallyDrop,
+    mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut},
     task::Poll,
 };
+
 use embassy_sync::{
     blocking_mutex::{Mutex, raw::RawMutex},
     semaphore::{FairSemaphore, Semaphore, WaitQueueFull},
@@ -13,21 +14,25 @@ use embassy_sync::{
 };
 use nonmax::NonMaxU8;
 
-type NodeIndex = NonMaxU8;
+pub(crate) type NodeIndex = NonMaxU8;
 
-struct Node {
+pub trait Reset {
+    fn clear(&mut self);
+}
+
+pub(crate) struct Node {
     next: Option<NodeIndex>,
 }
 
 impl Node {
-    fn new<const POOL_SIZE: usize>(index: usize) -> Self {
+    const fn new<const N: usize>(index: usize) -> Self {
         const {
-            assert!(POOL_SIZE <= NodeIndex::MAX.get() as usize + 1);
+            assert!(N <= NodeIndex::MAX.get() as usize + 1);
         }
-        assert!(index < POOL_SIZE);
+        assert!(index < N);
 
         Self {
-            next: if index + 1 < POOL_SIZE {
+            next: if index + 1 < N {
                 NodeIndex::new((index + 1) as u8)
             } else {
                 None
@@ -36,39 +41,10 @@ impl Node {
     }
 }
 
-pub struct ItemHandle<'p, T: Reset, M: RawMutex, const W: usize> {
-    pool: &'p PoolView<'p, T, M, W>,
-    index: NodeIndex,
-    _item: PhantomData<T>,
-    _not_sync: PhantomData<Cell<()>>,
-}
-
-impl<'p, T: Reset, M: RawMutex, const W: usize> Deref for ItemHandle<'p, T, M, W> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: 슬롯을 소유하고, 참조 수명은 핸들 대여에 묶인다.
-        unsafe { &*self.pool.data_ptr(self.index) }
-    }
-}
-
-impl<'p, T: Reset, M: RawMutex, const W: usize> DerefMut for ItemHandle<'p, T, M, W> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: 핸들과 슬롯을 독점 접근한다.
-        unsafe { &mut *self.pool.data_ptr(self.index) }
-    }
-}
-
-impl<'p, T: Reset, M: RawMutex, const W: usize> Drop for ItemHandle<'p, T, M, W> {
-    fn drop(&mut self) {
-        // SAFETY: 소유한 슬롯을 한 번 반환한다.
-        unsafe { self.pool.release_index(self.index) }
-    }
-}
-
-struct IndexList {
+pub(crate) struct IndexList {
     head: Option<NodeIndex>,
     tail: Option<NodeIndex>,
+    len: usize,
 }
 
 impl IndexList {
@@ -76,16 +52,16 @@ impl IndexList {
         Self {
             head: None,
             tail: None,
+            len: 0,
         }
     }
 
-    // SAFETY: 리스트 소속 노드를 독점 접근할 수 있어야 한다.
     unsafe fn pop(&mut self, nodes: &[UnsafeCell<Node>]) -> Option<NodeIndex> {
         let index = self.head?;
-
         let node = unsafe { &mut *nodes[index.get() as usize].get() };
 
         self.head = node.next.take();
+        self.len -= 1;
 
         if self.head.is_none() {
             self.tail = None;
@@ -94,8 +70,6 @@ impl IndexList {
         Some(index)
     }
 
-    // SAFETY: index는 이 리스트에 아직 속하지 않은 독점 소유 노드이고,
-    // 리스트 소속 노드도 독점 접근할 수 있어야 한다.
     unsafe fn push(&mut self, nodes: &[UnsafeCell<Node>], index: NodeIndex) {
         unsafe {
             (*nodes[index.get() as usize].get()).next = None;
@@ -110,38 +84,300 @@ impl IndexList {
         }
 
         self.tail = Some(index);
+        self.len += 1;
     }
 }
 
-pub(crate) struct Sender<'q, 'p, T, M: RawMutex, const W: usize> {
-    queue: &'q PoolLinkedList<'p, T, M, W>,
+pub(crate) trait PoolAccess: 'static {
+    type Item: Reset + 'static;
+
+    fn try_acquire_index(&self) -> Option<NodeIndex>;
+
+    // SAFETY: 호출자는 해당 슬롯의 소유권과 참조의 독점성을 보장해야 한다.
+    unsafe fn data_ptr(&self, index: NodeIndex) -> *mut Self::Item;
+
+    // SAFETY: 호출자는 슬롯을 독점 소유하고 한 번만 반환해야 한다.
+    // 반환 후에는 슬롯에 접근하면 안 된다.
+    unsafe fn release_index(&self, index: NodeIndex);
+
+    fn nodes(&self) -> &[UnsafeCell<Node>];
+
+    unsafe fn release_list(&self, list: IndexList);
 }
 
-impl<'q, 'p, T: Reset, M: RawMutex, const W: usize> Sender<'q, 'p, T, M, W> {
-    pub(crate) fn send(&self, item: ItemHandle<'p, T, M, W>) {
-        self.queue.push(item);
-    }
+pub(crate) trait WaitPoolAccess: PoolAccess {
+    async fn acquire_index(&self) -> Result<NodeIndex, WaitQueueFull>;
+}
 
-    pub(crate) fn try_acquire(&self) -> Option<ItemHandle<'p, T, M, W>> {
-        self.queue.try_acquire()
-    }
+pub(crate) trait StaticPool: Sized + 'static {
+    type Storage: PoolAccess;
 
-    pub(crate) async fn acquire(&self) -> Result<ItemHandle<'p, T, M, W>, WaitQueueFull> {
-        self.queue.acquire().await
+    // 같은 풀 타입은 항상 같은 저장소를 반환해야 한다.
+    fn storage() -> &'static Self::Storage;
+}
+
+pub(crate) struct ItemHandle<P: StaticPool> {
+    index: NodeIndex,
+    _pool: PhantomData<P>,
+    _not_sync: PhantomData<Cell<()>>,
+}
+
+impl<P: StaticPool> ItemHandle<P> {
+    fn from_index(index: NodeIndex) -> Self {
+        Self {
+            index,
+            _pool: PhantomData,
+            _not_sync: PhantomData,
+        }
     }
 }
 
-pub(crate) struct Receiver<'q, 'p, T, M: RawMutex, const W: usize> {
-    queue: &'q PoolLinkedList<'p, T, M, W>,
+impl<P: StaticPool> Deref for ItemHandle<P> {
+    type Target = <P::Storage as PoolAccess>::Item;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: 핸들이 슬롯을 소유하며 참조 수명은 핸들 대여에 묶인다.
+        unsafe { &*P::storage().data_ptr(self.index) }
+    }
 }
 
-impl<'q, 'p, T: Reset, M: RawMutex, const W: usize> Receiver<'q, 'p, T, M, W> {
-    pub(crate) fn try_receive(&self) -> Option<ItemHandle<'p, T, M, W>> {
-        self.queue.try_pop()
+impl<P: StaticPool> DerefMut for ItemHandle<P> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: 핸들과 슬롯을 독점 접근하며 참조 수명은 대여에 묶인다.
+        unsafe { &mut *P::storage().data_ptr(self.index) }
+    }
+}
+
+impl<P: StaticPool> Drop for ItemHandle<P> {
+    fn drop(&mut self) {
+        // SAFETY: 핸들이 소유한 슬롯을 한 번 반환한다.
+        unsafe { P::storage().release_index(self.index) }
+    }
+}
+
+impl<P: StaticPool> AsRef<[u8]> for ItemHandle<P>
+where
+    <P::Storage as PoolAccess>::Item: AsRef<[u8]>,
+{
+    fn as_ref(&self) -> &[u8] {
+        (**self).as_ref()
+    }
+}
+
+pub(crate) struct PoolInner<T, R: RawMutex, const N: usize> {
+    data: [UnsafeCell<T>; N],
+    nodes: [UnsafeCell<Node>; N],
+    free_list: Mutex<R, RefCell<IndexList>>,
+}
+
+impl<T: Reset, R: RawMutex, const N: usize> PoolInner<T, R, N> {
+    pub(crate) const fn new(data: [UnsafeCell<T>; N]) -> Self {
+        const {
+            assert!(N <= NodeIndex::MAX.get() as usize + 1, "invalid pool size");
+        }
+
+        let head = if N > 0 { NodeIndex::new(0) } else { None };
+
+        let tail = if N > 0 {
+            NodeIndex::new((N - 1) as u8)
+        } else {
+            None
+        };
+
+        let mut nodes = [const { UnsafeCell::new(Node { next: None }) }; N];
+        let mut index = 0;
+        while index < N {
+            nodes[index] = UnsafeCell::new(Node::new::<N>(index));
+            index += 1;
+        }
+
+        Self {
+            data,
+            nodes,
+            free_list: Mutex::new(RefCell::new(IndexList { head, tail, len: N })),
+        }
     }
 
-    pub(crate) async fn receive(&self) -> ItemHandle<'p, T, M, W> {
-        self.queue.pop().await
+    fn try_take_index(&self) -> Option<NodeIndex> {
+        let index = self
+            .free_list
+            .lock(|state| unsafe { state.borrow_mut().pop(&self.nodes) })?;
+
+        unsafe {
+            (&mut *self.data[index.get() as usize].get()).clear();
+        }
+
+        Some(index)
+    }
+
+    unsafe fn data_ptr(&self, index: NodeIndex) -> *mut T {
+        self.data[index.get() as usize].get()
+    }
+
+    unsafe fn release_index(&self, index: NodeIndex) {
+        unsafe {
+            (&mut *self.data[index.get() as usize].get()).clear();
+        }
+
+        self.free_list.lock(|state| unsafe {
+            state.borrow_mut().push(&self.nodes, index);
+        });
+    }
+
+    fn nodes(&self) -> &[UnsafeCell<Node>] {
+        &self.nodes
+    }
+
+    #[allow(dead_code)]
+    unsafe fn release_list(&self, list: IndexList) -> usize {
+        let Some(head) = list.head else {
+            return 0;
+        };
+        let tail = list.tail.expect("nonempty list without tail");
+
+        self.free_list.lock(|state| {
+            let mut free = state.borrow_mut();
+
+            if let Some(free_tail) = free.tail {
+                // SAFETY: 기존 free list는 잠금으로 보호되고,
+                // 반환 체인은 독점 소유한다.
+                unsafe {
+                    (*self.nodes[free_tail.get() as usize].get()).next = Some(head);
+                }
+            } else {
+                free.head = Some(head);
+            }
+
+            free.tail = Some(tail);
+            free.len += list.len;
+        });
+
+        list.len
+    }
+}
+
+unsafe impl<T: Send, R: RawMutex + Sync, const N: usize> Sync for PoolInner<T, R, N> {}
+
+pub(crate) struct TxPool<T, R: RawMutex, const N: usize, const W: usize> {
+    inner: PoolInner<T, R, N>,
+    waiters: FairSemaphore<R, W>,
+}
+
+impl<T, R, const N: usize, const W: usize> TxPool<T, R, N, W>
+where
+    T: Reset + 'static,
+    R: RawMutex + 'static,
+{
+    pub(crate) const fn new(data: [UnsafeCell<T>; N]) -> Self {
+        Self {
+            inner: PoolInner::new(data),
+            waiters: FairSemaphore::new(N),
+        }
+    }
+}
+
+impl<T, R, const N: usize, const W: usize> PoolAccess for TxPool<T, R, N, W>
+where
+    T: Reset + 'static,
+    R: RawMutex + 'static,
+{
+    type Item = T;
+
+    fn try_acquire_index(&self) -> Option<NodeIndex> {
+        let permit = self.waiters.try_acquire(1)?;
+        let index = self
+            .inner
+            .try_take_index()
+            .expect("semaphore acquired but empty free list");
+
+        permit.disarm();
+        Some(index)
+    }
+
+    unsafe fn data_ptr(&self, index: NodeIndex) -> *mut Self::Item {
+        unsafe { self.inner.data_ptr(index) }
+    }
+
+    unsafe fn release_index(&self, index: NodeIndex) {
+        unsafe {
+            self.inner.release_index(index);
+        }
+
+        self.waiters.release(1);
+    }
+
+    fn nodes(&self) -> &[UnsafeCell<Node>] {
+        self.inner.nodes()
+    }
+
+    unsafe fn release_list(&self, list: IndexList) {
+        let released = unsafe { self.inner.release_list(list) };
+
+        self.waiters.release(released);
+    }
+}
+
+impl<T, R, const N: usize, const W: usize> WaitPoolAccess for TxPool<T, R, N, W>
+where
+    T: Reset + 'static,
+    R: RawMutex + 'static,
+{
+    async fn acquire_index(&self) -> Result<NodeIndex, WaitQueueFull> {
+        let permit = self.waiters.acquire(1).await?;
+        let index = self
+            .inner
+            .try_take_index()
+            .expect("semaphore acquired but empty free list");
+
+        permit.disarm();
+        Ok(index)
+    }
+}
+
+// RxPool is only acquired by Link, so waiter is not needed
+pub(crate) struct RxPool<T, R: RawMutex, const N: usize> {
+    inner: PoolInner<T, R, N>,
+}
+
+impl<T, R, const N: usize> RxPool<T, R, N>
+where
+    T: Reset + 'static,
+    R: RawMutex + 'static,
+{
+    pub(crate) const fn new(data: [UnsafeCell<T>; N]) -> Self {
+        Self {
+            inner: PoolInner::new(data),
+        }
+    }
+}
+
+impl<T, R, const N: usize> PoolAccess for RxPool<T, R, N>
+where
+    T: Reset + 'static,
+    R: RawMutex + 'static,
+{
+    type Item = T;
+
+    fn try_acquire_index(&self) -> Option<NodeIndex> {
+        self.inner.try_take_index()
+    }
+
+    unsafe fn data_ptr(&self, index: NodeIndex) -> *mut Self::Item {
+        unsafe { self.inner.data_ptr(index) }
+    }
+
+    unsafe fn release_index(&self, index: NodeIndex) {
+        unsafe {
+            self.inner.release_index(index);
+        }
+    }
+
+    fn nodes(&self) -> &[UnsafeCell<Node>] {
+        self.inner.nodes()
+    }
+
+    unsafe fn release_list(&self, list: IndexList) {
+        let _released = unsafe { self.inner.release_list(list) };
     }
 }
 
@@ -150,44 +386,40 @@ struct ListState {
     waker: WakerRegistration,
 }
 
-pub(crate) struct PoolLinkedList<'p, T, M: RawMutex, const W: usize> {
-    pool: &'p PoolView<'p, T, M, W>,
-    state: Mutex<M, RefCell<ListState>>,
+pub(crate) struct PoolLinkedList<P: StaticPool, R: RawMutex> {
+    state: Mutex<R, RefCell<ListState>>,
+    _pool: PhantomData<P>,
 }
 
-impl<'p, T: Reset, M: RawMutex, const W: usize> PoolLinkedList<'p, T, M, W> {
-    pub(crate) fn new(pool: &'p PoolView<'p, T, M, W>) -> Self {
+impl<P: StaticPool, R: RawMutex> PoolLinkedList<P, R> {
+    pub(crate) const fn new() -> Self {
         Self {
-            pool: pool,
             state: Mutex::new(RefCell::new(ListState {
                 list: IndexList::new(),
                 waker: WakerRegistration::new(),
             })),
+            _pool: PhantomData,
         }
     }
 
-    pub(crate) fn try_pop(&self) -> Option<ItemHandle<'p, T, M, W>> {
+    pub(crate) fn try_receive(&self) -> Option<ItemHandle<P>> {
         let index = self.state.lock(|state| {
             let mut state = state.borrow_mut();
 
-            unsafe { state.list.pop(self.pool.nodes) }
+            // SAFETY: 리스트 소속 노드는 이 잠금으로 보호된다.
+            unsafe { state.list.pop(P::storage().nodes()) }
         })?;
 
-        Some(ItemHandle {
-            pool: self.pool,
-            index,
-            _item: PhantomData,
-            _not_sync: PhantomData,
-        })
+        Some(ItemHandle::from_index(index))
     }
 
-    pub(crate) async fn pop(&self) -> ItemHandle<'p, T, M, W> {
+    pub(crate) async fn receive(&self) -> ItemHandle<P> {
         let index = poll_fn(|cx| {
             self.state.lock(|state| {
                 let mut state = state.borrow_mut();
 
-                // SAFETY: 리스트 소속 노드는 이 잠금으로 독점 접근한다.
-                if let Some(index) = unsafe { state.list.pop(self.pool.nodes) } {
+                // SAFETY: 리스트 소속 노드는 이 잠금으로 보호된다.
+                if let Some(index) = unsafe { state.list.pop(P::storage().nodes()) } {
                     Poll::Ready(index)
                 } else {
                     state.waker.register(cx.waker());
@@ -197,188 +429,137 @@ impl<'p, T: Reset, M: RawMutex, const W: usize> PoolLinkedList<'p, T, M, W> {
         })
         .await;
 
-        ItemHandle {
-            pool: self.pool,
-            index,
-            _item: PhantomData,
-            _not_sync: PhantomData,
-        }
+        ItemHandle::from_index(index)
     }
 
-    pub(crate) fn push(&self, item: ItemHandle<'p, T, M, W>) {
-        assert!(
-            core::ptr::eq(self.pool, item.pool),
-            "handle belongs to a different pool"
-        );
-
+    pub(crate) fn send(&self, item: ItemHandle<P>) {
+        // 핸들을 소비하되 슬롯을 풀에 반환하지 않는다.
         let index = ManuallyDrop::new(item).index;
 
         self.state.lock(|state| {
             let mut state = state.borrow_mut();
 
-            // SAFETY: 같은 풀의 핸들을 소비하여 노드를 리스트에 넘긴다.
-            // 리스트 소속 노드는 이 잠금으로 보호한다.
+            // SAFETY: 같은 풀의 핸들에서 소유권을 넘겨받았고,
+            // 기존 리스트 소속 노드는 이 잠금으로 보호된다.
             unsafe {
-                state.list.push(self.pool.nodes, index);
+                state.list.push(P::storage().nodes(), index);
             }
 
             state.waker.wake();
         });
     }
 
-    pub(crate) fn try_acquire(&self) -> Option<ItemHandle<'p, T, M, W>> {
-        self.pool.try_acquire()
+    pub(crate) fn try_acquire(&self) -> Option<ItemHandle<P>> {
+        P::storage().try_acquire_index().map(ItemHandle::from_index)
     }
 
-    pub(crate) async fn acquire(&self) -> Result<ItemHandle<'p, T, M, W>, WaitQueueFull> {
-        self.pool.acquire().await
-    }
-
-    pub(crate) fn sender(&self) -> Sender<'_, 'p, T, M, W> {
+    pub(crate) fn sender(&self) -> Sender<'_, Self> {
         Sender { queue: self }
     }
 
-    pub(crate) fn receiver(&self) -> Receiver<'_, 'p, T, M, W> {
+    pub(crate) fn receiver(&self) -> Receiver<'_, Self> {
         Receiver { queue: self }
     }
+
+    pub(crate) fn clear(&self) {
+        let list = self
+            .state
+            .lock(|state| core::mem::replace(&mut state.borrow_mut().list, IndexList::new()));
+
+        // SAFETY: 큐에서 분리한 체인을 독점 소유한다.
+        unsafe { P::storage().release_list(list) };
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.state.lock(|state| state.borrow().list.len)
+    }
 }
 
-pub struct PoolStorage<T, M: RawMutex, const POOL_SIZE: usize, const WAITERS: usize> {
-    data: [UnsafeCell<T>; POOL_SIZE],
-    nodes: [UnsafeCell<Node>; POOL_SIZE],
-
-    free_list: Mutex<M, RefCell<IndexList>>,
-    waiters: FairSemaphore<M, WAITERS>,
-}
-
-impl<T: Reset, M, const POOL_SIZE: usize, const WAITERS: usize>
-    PoolStorage<T, M, POOL_SIZE, WAITERS>
+impl<P: StaticPool, R: RawMutex> PoolLinkedList<P, R>
 where
-    M: RawMutex,
+    P::Storage: WaitPoolAccess,
 {
-    pub fn new(mut init: impl FnMut() -> T) -> Self {
-        const {
-            assert!(WAITERS > 0, "waiters must be greater than 0");
-            assert!(
-                POOL_SIZE <= NodeIndex::MAX.get() as usize + 1,
-                "invalid POOL_SIZE"
-            );
-        }
-
-        let nodes: [UnsafeCell<Node>; POOL_SIZE] =
-            core::array::from_fn(|index| UnsafeCell::new(Node::new::<POOL_SIZE>(index)));
-
-        let free_list = IndexList {
-            head: if POOL_SIZE > 0 {
-                NodeIndex::new(0)
-            } else {
-                None
-            },
-            tail: POOL_SIZE
-                .checked_sub(1)
-                .and_then(|index| NodeIndex::new(index as u8)),
-        };
-
-        Self {
-            data: core::array::from_fn(|_| UnsafeCell::new(init())),
-            nodes: nodes,
-            free_list: Mutex::new(RefCell::new(free_list)),
-            waiters: FairSemaphore::new(POOL_SIZE),
-        }
-    }
-
-    pub fn view(&mut self) -> PoolView<'_, T, M, WAITERS> {
-        PoolView {
-            data: &self.data,
-            nodes: &self.nodes,
-            free_list: &self.free_list,
-            waiters: &self.waiters,
-        }
+    pub(crate) async fn acquire(&self) -> Result<ItemHandle<P>, WaitQueueFull> {
+        let index = P::storage().acquire_index().await?;
+        Ok(ItemHandle::from_index(index))
     }
 }
 
-unsafe impl<T: Send, M: RawMutex + Sync, const POOL_SIZE: usize, const WAITERS: usize> Sync
-    for PoolStorage<T, M, POOL_SIZE, WAITERS>
+pub(crate) struct Sender<'q, Q> {
+    pub(crate) queue: &'q Q,
+}
+
+impl<'q, P: StaticPool, R: RawMutex> Sender<'q, PoolLinkedList<P, R>> {
+    pub(crate) fn send(&self, item: ItemHandle<P>) {
+        self.queue.send(item);
+    }
+
+    pub(crate) fn try_acquire(&self) -> Option<ItemHandle<P>> {
+        self.queue.try_acquire()
+    }
+}
+
+impl<'q, P, R> Sender<'q, PoolLinkedList<P, R>>
+where
+    P: StaticPool,
+    P::Storage: WaitPoolAccess,
+    R: RawMutex,
 {
+    pub(crate) async fn acquire(&self) -> Result<ItemHandle<P>, WaitQueueFull> {
+        self.queue.acquire().await
+    }
 }
 
-pub struct PoolView<'a, T, M: RawMutex, const W: usize> {
-    data: &'a [UnsafeCell<T>],
-    nodes: &'a [UnsafeCell<Node>],
-    free_list: &'a Mutex<M, RefCell<IndexList>>,
-    waiters: &'a FairSemaphore<M, W>,
+pub(crate) struct Receiver<'q, Q> {
+    pub(crate) queue: &'q Q,
 }
 
-unsafe impl<'a, T: Send, M: RawMutex + Sync, const W: usize> Sync for PoolView<'a, T, M, W> {}
-
-impl<'a, T: Reset, M: RawMutex, const W: usize> PoolView<'a, T, M, W> {
-    pub(crate) fn try_acquire(&self) -> Option<ItemHandle<'_, T, M, W>> {
-        let permit = self.waiters.try_acquire(1)?;
-        let item = self.get_item();
-
-        permit.disarm();
-        Some(item)
+impl<'q, P: StaticPool, R: RawMutex> Receiver<'q, PoolLinkedList<P, R>> {
+    pub(crate) fn try_receive(&self) -> Option<ItemHandle<P>> {
+        self.queue.try_receive()
     }
 
-    pub(crate) async fn acquire(&self) -> Result<ItemHandle<'_, T, M, W>, WaitQueueFull> {
-        let permit = self.waiters.acquire(1).await?;
-        let item = self.get_item();
-
-        permit.disarm();
-        Ok(item)
+    pub(crate) async fn receive(&self) -> ItemHandle<P> {
+        self.queue.receive().await
     }
+}
 
-    fn get_item(&self) -> ItemHandle<'_, T, M, W> {
-        let index = self
-            .free_list
-            .lock(|state| {
-                let mut free_list = state.borrow_mut();
+macro_rules! static_pool {
+    (
+        $vis:vis $name:ident:
+        $storage:ty,
+        init: $init:expr $(,)?
+    ) => {
+        $vis struct $name;
 
-                // SAFETY: free list 소속 노드는 이 잠금으로 보호한다.
-                unsafe { free_list.pop(&self.nodes) }
-            })
-            .expect("semaphore acquired but empty list?");
+        impl $crate::linkedlist::StaticPool for $name {
+            type Storage = $storage;
 
-        ItemHandle {
-            pool: self,
-            index,
-            _item: PhantomData,
-            _not_sync: PhantomData,
-        }
-    }
+            fn storage() -> &'static Self::Storage {
+                static STORAGE: $storage = $init;
 
-    //     pub(crate) fn release(&self, item: ItemHandle<'_, T, M, W>) {
-    //         assert!(
-    //             core::ptr::eq(self, item.pool),
-    //             "handle belongs to a different pool"
-    //         );
-    //
-    //         drop(item);
-    //     }
-
-    // pub(crate) fn list(&self) -> PoolLinkedList<'_, T, M, W> {
-    //     PoolLinkedList::new(self)
-    // }
-
-    fn data_ptr(&self, index: NodeIndex) -> *mut T {
-        self.data[index.get() as usize].get()
-    }
-
-    // SAFETY: 호출자는 해당 슬롯을 독점 소유하며,
-    // 반환 후 슬롯에 접근하지 않아야 한다.
-    unsafe fn release_index(&self, index: NodeIndex) {
-        unsafe {
-            (&mut *self.data[index.get() as usize].get()).clear();
+                &STORAGE
+            }
         }
 
-        self.free_list.lock(|state| unsafe {
-            state.borrow_mut().push(self.nodes, index);
-        });
+        impl $name {
+            // SAFETY: list는 이 풀에서 분리한 독점 소유 체인이어야 한다.
+            #[allow(dead_code)]
+            pub(crate) unsafe fn release_list(
+                list: $crate::linkedlist::IndexList,
+            ) {
+                let storage =
+                    <Self as $crate::linkedlist::StaticPool>::storage();
 
-        self.waiters.release(1);
-    }
+                unsafe {
+                    $crate::linkedlist::PoolAccess::release_list(
+                        storage,
+                        list,
+                    );
+                }
+            }
+        }
+    };
 }
 
-pub trait Reset {
-    fn clear(&mut self);
-}
+pub(crate) use static_pool;

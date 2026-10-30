@@ -4,27 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+yip-macros = { path = "yip-macros" }
+cortex-m = "0.7"
 defmt = { version = "1", optional = true }
 
-
-embassy-sync = { version = "0.8" }
-embassy-futures = { version = "0.1" }
-embassy-nrf = { version = "0.11", features = [
-    "nrf52840",
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = [
+    "gpiote",
     "unstable-pac",
     "time",
-], }
+] }
 critical-section = "1"
 bitfield-struct = "0.13"
-nonmax = {
-    version = "0.5.5",
-    default-features = false,
-}
+nonmax = { version = "0.5.5", default-features = false }
 fixed = "1.28.0"
 static_cell = "2.1"
+paste = "1.0"
 
 [dev-dependencies]
-embassy-executor = { version = "0.10", features = [
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", branch = "main", features = [
     "platform-cortex-m",
     "executor-thread",
 ] }
@@ -32,8 +32,27 @@ cortex-m-rt = "0.7.5"
 defmt-rtt = "1"
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 
+
 [features]
+default = ["nrf52840"]
+
+nrf52840 = ["embassy-nrf/nrf52840"]
+nrf54lm20 = [
+    "embassy-nrf/nrf54lm20-app-s",
+    "embassy-nrf/time-driver-grtc",
+]
 defmt = ["dep:defmt"]
+
+[profile.dev]
+opt-level = 2
 
 [profile.release]
 debug = 2
+
+
+[patch."https://github.com/embassy-rs/embassy.git"]
+embassy-nrf = { path = "C:/git/rust/embassy/embassy-nrf" }
+embassy-time = { path = "C:/git/rust/embassy/embassy-time" }
+embassy-sync = { path = "C:/git/rust/embassy/embassy-sync" }
+embassy-futures = { path = "C:/git/rust/embassy/embassy-futures" }
+embassy-executor = { path = "C:/git/rust/embassy/embassy-executor" }

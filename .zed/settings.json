@@ -1,16 +1,31 @@
+// {
+//   "lsp": {
+//     "rust-analyzer": {
+//       "initialization_options": {
+//         "linkedProjects": ["Cargo.toml"],
+//         "cargo": {
+//           "target": "thumbv7em-none-eabihf",
+//           "noDefaultFeatures": true,
+//           "features": ["nrf52840", "defmt"]
+//         },
+//         "check": {
+//           "allTargets": false
+//         }
+//       }
+//     }
+//   }
+// }
 {
   "lsp": {
     "rust-analyzer": {
       "initialization_options": {
-        "linkedProjects": ["Cargo.toml"],
-        "cargo": {
-          "target": "thumbv7em-none-eabihf",
-          "features": ["defmt"]
-        },
+        // "linkedProjects": ["firmware/central/Cargo.toml"],
+        "linkedProjects": ["firmware/peripheral/Cargo.toml"],
         "check": {
           "allTargets": false
         }
       }
     }
   }
+
 }
