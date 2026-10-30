@@ -22,7 +22,10 @@ impl Cycle {
 }
 
 pub fn start() -> Cycle {
-    Cycle(DWT::cycle_count())
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    let cycles = DWT::cycle_count();
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    Cycle(cycles)
 }
 
 pub fn end(start: Cycle) -> Cycle {

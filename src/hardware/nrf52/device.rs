@@ -29,6 +29,12 @@ pub struct DeviceContext<H> {
 }
 
 impl<H> DeviceContext<H> {
+    /// Reserve a second PPI group for one-shot central RX completion.
+    pub fn with_central_completion_group<G: Group>(mut self, group: Peri<'static, G>) -> Self {
+        self.ppi.set_central_completion_group(group.into());
+        self
+    }
+
     pub fn new<T, R, E, G>(
         radio: Peri<'static, RADIO>,
         timer: Peri<'static, T>,

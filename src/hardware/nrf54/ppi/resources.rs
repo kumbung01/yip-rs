@@ -193,9 +193,13 @@ impl<'d, D: Domain, const N: usize> Channels<'d, D, N> {
     }
 
     pub fn enable(&mut self) {
+        self.enable_except(0);
+    }
+
+    pub fn enable_except(&mut self, excluded: u32) {
         D::regs()
             .chenset()
-            .write_value(pac::dppic::regs::Chen(self.mask));
+            .write_value(pac::dppic::regs::Chen(self.mask & !excluded));
     }
 
     pub fn disable(&mut self) {

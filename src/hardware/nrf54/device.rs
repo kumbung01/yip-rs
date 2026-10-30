@@ -3,7 +3,7 @@ use crate::hardware::clock::{GrtcChannel, Nrf54Clock};
 use crate::hardware::context::SlotContext;
 use crate::hardware::egu::Nrf54Egu;
 use crate::hardware::ppi::{
-    Channel, Group as PpiGroup, Nrf54Ppi, PeriDomain, Radio as RadioDomain,
+    Channel, Group as PpiGroup, Nrf54Ppi, PeriDomain, RADIO_CHANNEL_COUNT, Radio as RadioDomain,
 };
 use crate::hardware::radio::Nrf54Radio;
 use crate::register_egu;
@@ -14,7 +14,6 @@ use embassy_nrf::{
     Peri,
     interrupt::typelevel::{Binding, EGU10, Handler},
     peripherals::RADIO,
-    timer::Instance as TimerInstance,
 };
 
 /// Hardware resources with a validated interrupt binding to handler `H`.
@@ -28,19 +27,18 @@ pub struct DeviceContext<H> {
 }
 
 impl<H> DeviceContext<H> {
-    pub fn new<T, R, B>(
+    pub fn new<R, B>(
         radio: Peri<'static, RADIO>,
-        timer: Peri<'static, T>,
+        timer: Peri<'static, embassy_nrf::peripherals::TIMER10>,
         grtc: Peri<'static, R>,
-        radio_channels: [Channel<'static, RadioDomain>; 3],
+        radio_channels: [Channel<'static, RadioDomain>; RADIO_CHANNEL_COUNT],
         peri_channels: [Channel<'static, PeriDomain>; 1],
         bridge: (Peri<'static, B>, Peri<'static, B::Paired>),
-        group: PpiGroup<'static, RadioDomain>,
+        groups: [PpiGroup<'static, RadioDomain>; 2],
         _irq: impl Binding<EGU10, H>,
         seed: u32,
     ) -> Self
     where
-        T: TimerInstance,
         R: GrtcChannel,
         B: BridgeChannel,
         H: Handler<EGU10>,
@@ -63,7 +61,7 @@ impl<H> DeviceContext<H> {
         Self {
             radio,
             clock: Nrf54Clock::new(grtc, timer),
-            ppi: Nrf54Ppi::new(radio_channels, peri_channels, bridge, group),
+            ppi: Nrf54Ppi::new(radio_channels, peri_channels, bridge, groups),
             egu,
             context,
             _handler: PhantomData,

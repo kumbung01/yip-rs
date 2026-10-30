@@ -15,7 +15,7 @@ embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", branch = "ma
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7.5"
 defmt = "1"
-defmt-rtt = "1"
+defmt-rtt = { version = "1", features = ["disable-blocking-mode"] }
 
 [profile.dev]
 opt-level = 2

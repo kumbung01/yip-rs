@@ -9,6 +9,30 @@ use embassy_nrf::{
 use crate::config::*;
 use crate::pdu::*;
 
+// Connected RX diagnostics use CC3 for CRCOK and reuse CC0 after RXEN has
+// already fired. TIMER0..2 only have four CC registers, so do not assume CC5.
+#[cfg(feature = "defmt")]
+static ACK_TIMER: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+#[cfg(feature = "defmt")]
+pub(crate) fn set_ack_timer(timer: Option<embassy_nrf::pac::timer::Timer>) {
+    ACK_TIMER.store(
+        timer.map_or(core::ptr::null_mut(), |timer| timer.as_ptr()),
+        core::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+#[cfg(feature = "defmt")]
+pub(crate) fn capture_ack_irq() {
+    let ptr = ACK_TIMER.load(core::sync::atomic::Ordering::Relaxed);
+    if !ptr.is_null() {
+        // SAFETY: registered only while the owned TIMER is in connected RX.
+        let timer = unsafe { embassy_nrf::pac::timer::Timer::from_ptr(ptr) };
+        timer.tasks_capture(0).write_value(1);
+    }
+}
+
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct Timestamp {
@@ -61,6 +85,21 @@ impl Nrf52Clock {
 
 pub(crate) type Timing = crate::hardware::api::clock::Timing<Timestamp>;
 
+impl Timing {
+    fn set_drift(&mut self, drift: i32) {
+        let error_scaled = drift * TIMER_TICK_SCALED as i32;
+        if let Some(value) = &mut self.drift {
+            *value += error_scaled / 4;
+        } else {
+            self.drift = Some(error_scaled);
+        }
+    }
+
+    fn get_drift_scaled(&self) -> i32 {
+        self.drift.unwrap_or(0)
+    }
+}
+
 fn unscale_timer(cc: u32) -> u32 {
     (cc + TIMER_TICK_SCALED / 2) / TIMER_TICK_SCALED
 }
@@ -90,13 +129,14 @@ impl ClockDriver for Nrf52Clock {
     fn stop_central(&mut self) {
         self.timer.stop();
         self.timer.clear();
+        self.ts.timer = 0;
     }
 
     fn set_next_slot_central(&mut self) -> u32 {
         let now_us = self.timer.cc(3).capture();
         let ts = self.ts.timer;
-        let elapsed_us = (now_us - ts) as u32;
         let radio_margin_us = TIMESLOT_MARGIN_US;
+        let elapsed_us = now_us.wrapping_sub(ts);
         let slot_diff = (elapsed_us + radio_margin_us).div_ceil(YIP_SLOTSIZE_US as u32);
         let tx_start = ts.wrapping_add((slot_diff).wrapping_mul(YIP_SLOTSIZE_US as u32));
 
@@ -159,6 +199,11 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn set_next_sync(&mut self) -> (u32, u32) {
+        // Diagnostic RX keeps TIMER running through completion, including
+        // failures. Every RTC-triggered window needs a fresh relative counter.
+        self.timer.stop();
+        self.timer.clear();
+
         let sync_duration_scaled =
             us_to_timer_ticks(PERIPHEARL_SYNC_DURATION_US) as u32 * TIMER_TICK_SCALED;
 
@@ -195,7 +240,12 @@ impl ClockDriver for Nrf52Clock {
 
     fn set_next_pre_slot(&mut self, tm: &Timing) {
         // let prepare_ticks = us_to_rtc_ticks(1_000) as u32;
-        let prepare_ticks = tm.loop_ticks_scaled / RTC_TICK_SCALED as u32;
+        let loop_ticks_scaled = tm
+            .loop_us
+            .checked_mul(TIMER_TICKS_PER_US)
+            .and_then(|ticks| ticks.checked_mul(TIMER_TICK_SCALED))
+            .expect("connection loop exceeds RTC fixed-point range");
+        let prepare_ticks = loop_ticks_scaled / RTC_TICK_SCALED as u32;
         let hb_rtc_tick = us_to_rtc_ticks(HEARTBEAT_DURATION_US) as u32;
 
         let rtc_now = self.rtc.read();
@@ -216,6 +266,11 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
+        // A failed RX never reaches ACK setup (which normally clears TIMER).
+        // Reset before writing the next window's small relative CC values.
+        self.timer.stop();
+        self.timer.clear();
+
         let rtc_now = self.rtc.read();
         let elapsed_rtc = rtc_elapsed(rtc_now, tm.hb.rtc);
 
@@ -228,7 +283,10 @@ impl ClockDriver for Nrf52Clock {
 
             let rtc_elapsed_scaled = elapsed_rtc * RTC_TICK_SCALED as u32;
             let distance_scaled = rtc_elapsed_scaled + RTC_MARGIN_SCALED - tm.hb.timer;
-            let loop_ticks_scaled = tm.loop_ticks_scaled;
+            let loop_ticks_scaled = tm
+                .loop_us
+                .checked_mul(TIMER_TICKS_PER_US)?
+                .checked_mul(TIMER_TICK_SCALED)?;
             let hb_loops = i32::try_from(tm.hb_loops).ok()?;
             let min_rtc_delta = (elapsed_rtc + RADIO_MARGIN_RTC_TICKS) as i32;
             let mut loop_diff = distance_scaled.div_ceil(loop_ticks_scaled).max(1);

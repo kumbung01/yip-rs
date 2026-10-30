@@ -1,5 +1,3 @@
-#[cfg(feature = "nrf52840")]
-use crate::config::TIMER_TICK_SCALED;
 use crate::config::UpdateResult;
 
 /// Required hardware API. Every chip backend must implement all methods.
@@ -38,9 +36,10 @@ pub(crate) trait ClockTimestamp: Sized {
 #[derive(Default)]
 pub(crate) struct Timing<T> {
     pub hb: T,
-    pub drift_scaled: Option<i32>,
+    // Filter units belong to the backend (RTC fixed point on nRF52, us on nRF54).
+    pub drift: Option<i32>,
     pub hb_loops: u32,
-    pub loop_ticks_scaled: u32,
+    pub loop_us: u32,
     pub slot_now: u32,
 
     pub is_hb: bool,
@@ -48,23 +47,7 @@ pub(crate) struct Timing<T> {
 }
 
 impl<T> Timing<T> {
-    #[cfg(feature = "nrf52840")]
-    pub(crate) fn set_drift(&mut self, drift: i32) {
-        let error_scaled = drift * TIMER_TICK_SCALED as i32;
-
-        if let Some(ds) = &mut self.drift_scaled {
-            *ds += error_scaled / 4;
-        } else {
-            self.drift_scaled = Some(error_scaled);
-        }
-    }
-
-    #[cfg(feature = "nrf52840")]
-    pub(crate) fn get_drift_scaled(&self) -> i32 {
-        self.drift_scaled.unwrap_or(0)
-    }
-
     pub fn drift_reset(&mut self) {
-        self.drift_scaled = None;
+        self.drift = None;
     }
 }

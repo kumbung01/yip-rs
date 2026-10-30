@@ -11,6 +11,12 @@ use embassy_nrf::{
 use crate::config::*;
 use crate::pdu::*;
 
+#[path = "clock/schedule.rs"]
+mod schedule;
+
+// About three 32.768 kHz ticks, matching the nRF52 scheduling headroom.
+const SCHEDULE_MARGIN_US: u32 = 100;
+
 /*
  * Clock handles all timing related functions.
  */
@@ -48,9 +54,22 @@ impl<'d> GrtcCc<'d> {
         }
     }
 
+    fn disable(&mut self) {
+        let grtc = embassy_nrf::pac::GRTC;
+        // Writing CCL alone disarms this channel, without stopping Embassy's GRTC.
+        let low = grtc.cc(self.number).ccl().read();
+        grtc.cc(self.number).ccl().write_value(low);
+        grtc.events_compare(self.number).write_value(0);
+    }
+
     pub fn set_compare(&mut self, timestamp: u64) {
         let cc = embassy_nrf::pac::GRTC.cc(self.number);
 
+        assert!(timestamp < (1u64 << 52), "GRTC timestamp exceeds 52 bits");
+        embassy_nrf::pac::GRTC
+            .events_compare(self.number)
+            .write_value(0);
+        // CCL disables comparison; writing CCH re-enables it.
         cc.ccl().write_value(timestamp as u32);
         cc.cch().write(|w| {
             w.set_cch(((timestamp >> 32) & 0xF_FFFF) as u32);
@@ -104,11 +123,26 @@ impl Nrf54Clock {
     pub(crate) fn grtc_num(&self) -> usize {
         self.grtc.number
     }
+
 }
 
 // central impl
 
 pub(crate) type Timing = crate::hardware::api::clock::Timing<Timestamp>;
+
+impl Timing {
+    fn set_drift(&mut self, drift_us: i32) {
+        if let Some(value) = &mut self.drift {
+            *value += drift_us / 4;
+        } else {
+            self.drift = Some(drift_us);
+        }
+    }
+
+    fn get_drift_us(&self) -> i32 {
+        self.drift.unwrap_or(0)
+    }
+}
 
 impl ClockDriver for Nrf54Clock {
     type Timestamp = Timestamp;
@@ -123,7 +157,13 @@ impl ClockDriver for Nrf54Clock {
     #[cfg(feature = "defmt")]
     fn get_start_hw(&mut self) -> Timestamp {
         Timestamp {
-            us: Instant::now().as_micros(),
+            us: embassy_nrf::pac::GRTC.cc(self.grtc.number).ccl().read() as u64
+                | ((embassy_nrf::pac::GRTC
+                    .cc(self.grtc.number)
+                    .cch()
+                    .read()
+                    .cch() as u64)
+                    << 32),
         }
     }
 
@@ -133,14 +173,15 @@ impl ClockDriver for Nrf54Clock {
     }
 
     fn stop_central(&mut self) {
+        self.grtc.disable();
         self.timer.stop();
         self.timer.clear();
     }
 
     fn set_next_slot_central(&mut self) -> u32 {
         let now_us = Instant::now().as_micros();
-        let elapsed_us = (now_us - self.ts.us) as u32;
         let radio_margin_us = ISR_MARGIN_US;
+        let elapsed_us = (now_us - self.ts.us) as u32;
         let slot_diff = (elapsed_us + radio_margin_us).div_ceil(YIP_SLOTSIZE_US as u32);
         let tx_start = self
             .ts
@@ -184,39 +225,112 @@ impl ClockDriver for Nrf54Clock {
     }
 
     fn start_peripheral(&mut self) {
-        todo!();
+        // GRTC is owned and started by Embassy; only our CC and TIMER10 are reset.
+        self.grtc.disable();
+        self.timer.stop();
+        self.timer.clear();
+        self.ts.us = Instant::now().as_micros();
     }
 
     fn stop_peripheral(&mut self) {
-        todo!();
+        self.grtc.disable();
+        self.timer.stop();
+        self.timer.clear();
     }
 
     #[cfg(feature = "defmt")]
     fn get_now_peripheral(&self) -> u64 {
-        todo!();
+        Instant::now().as_micros()
     }
 
     fn set_next_sync(&mut self) -> (u32, u32) {
-        todo!();
+        let (at, steps) = schedule::next_sync(
+            Instant::now().as_micros(),
+            self.ts.us,
+            PERIPHEARL_SYNC_DURATION_US,
+            SCHEDULE_MARGIN_US,
+        );
+        self.timer.stop();
+        self.timer.clear();
+        self.timer.cc(2).write(0);
+        let timeout =
+            (PERIPHEARL_SYNC_DURATION_US - PERIPHERAL_SYNC_TIMETOUT_US) * TIMER_TICKS_PER_US;
+        self.timer.cc(1).write(timeout);
+        self.ts.us = at;
+        self.grtc.set_compare(at);
+        (steps, timeout)
     }
 
-    fn set_next_pre_slot(&mut self, _tm: &Timing) {
-        todo!();
+    fn set_next_pre_slot(&mut self, tm: &Timing) {
+        let at = schedule::next_prepare(
+            Instant::now().as_micros(),
+            tm.hb.us,
+            tm.loop_us,
+            HEARTBEAT_DURATION_US,
+            SCHEDULE_MARGIN_US,
+        );
+        self.grtc.set_compare(at);
     }
 
-    fn set_next_slot_peripheral(&mut self, _tm: &Timing) -> Result<(u32, u32), ()> {
-        todo!();
+    fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
+        let (at, loops) = schedule::next_slot(
+            Instant::now().as_micros(),
+            tm.hb.us,
+            tm.loop_us,
+            tm.get_drift_us(),
+            tm.hb_loops,
+            SCHEDULE_MARGIN_US,
+            RX_WINDOW_MARGIN_US,
+        )
+        .ok_or(())?;
+        let timeout = ADDR_DELAY_TICKS
+            + PACKETBUF_AIRTIME_TICKS
+            + TIMEOUT_MARGIN_TIMER_TICKS
+            + RX_WINDOW_MARGIN_US * TIMER_TICKS_PER_US;
+        self.timer.stop();
+        self.timer.clear();
+        self.timer.cc(2).write(0);
+        self.timer.cc(1).write(timeout);
+        self.ts.us = at;
+        self.grtc.set_compare(at);
+        Ok((loops, timeout))
     }
 
     fn read_sync(&self) -> u32 {
-        todo!();
+        self.timer.cc(2).read()
     }
 
-    fn update_sync(&self, _tm: &mut Timing) -> UpdateResult {
-        todo!();
+    fn update_sync(&self, tm: &mut Timing) -> UpdateResult {
+        if !tm.is_hb {
+            return UpdateResult::Skipped;
+        }
+        let Some(sync) = self.read_sync().checked_sub(ADDR_DELAY_TICKS) else {
+            return UpdateResult::Failed;
+        };
+        let Ok(sync_ticks) = i32::try_from(sync) else {
+            return UpdateResult::Failed;
+        };
+        let drift = sync_ticks - (RX_WINDOW_MARGIN_US * TIMER_TICKS_PER_US) as i32;
+        debug!("drift: {} us", drift / TIMER_TICKS_PER_US as i32);
+        if drift.abs() > (DRIFT_LIMIT_US * TIMER_TICKS_PER_US) as i32 {
+            return UpdateResult::Failed;
+        }
+        let Ok(hb) = Self::update_timestamp_by_sync(self.ts, sync) else {
+            return UpdateResult::Failed;
+        };
+        tm.set_drift(drift / TIMER_TICKS_PER_US as i32);
+        tm.hb = hb;
+        UpdateResult::Updated
     }
 
-    fn update_timestamp_by_sync(_ts: Timestamp, _sync: u32) -> Result<Timestamp, ()> {
-        todo!();
+    fn update_timestamp_by_sync(ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
+        let us = ts
+            .us
+            .checked_add(sync as u64 / TIMER_TICKS_PER_US as u64)
+            .ok_or(())?;
+        if us >= (1u64 << 52) {
+            return Err(());
+        }
+        Ok(Timestamp { us })
     }
 }

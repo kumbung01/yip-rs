@@ -333,6 +333,15 @@ impl YipCentral {
                 }
 
                 if alive.is_timeout(ctx.refslot) {
+                    debug!(
+                        "link timeout: id {} slot {} last_rx_slot {} gap_slots {} tx_sn {} expected_sn {}",
+                        self.turn,
+                        ctx.refslot,
+                        alive.0,
+                        ctx.refslot.wrapping_sub(alive.0),
+                        link.sn,
+                        link.nesn
+                    );
                     link.state = Disconnected;
                     ep.conn.signal(Disconnected);
                     link.reset();
@@ -359,10 +368,21 @@ impl YipCentral {
         // break if we have to retry
         'rx: {
             // Peer SN differs from the expected SN, so this is a duplicate.
-            let duplicate_payload = buf.pdu1.sn() != link.nesn;
+            let rx_sn = buf.pdu1.sn();
+            #[cfg(feature = "defmt")]
+            let rx_nesn = buf.pdu1.nesn();
+            let duplicate_payload = rx_sn != link.nesn;
 
             if duplicate_payload {
-                debug!("duplicate");
+                debug!(
+                    "duplicate: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {} len {}",
+                    ctx.refslot,
+                    rx_sn,
+                    link.nesn,
+                    rx_nesn,
+                    link.sn,
+                    buf.len()
+                );
                 break 'rx;
             }
 
@@ -402,7 +422,10 @@ impl YipCentral {
                     };
 
                     if total_len == 0 {
-                        debug!("empty packet, skip");
+                        debug!(
+                            "empty packet, skip: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {}",
+                            ctx.refslot, rx_sn, link.nesn, rx_nesn, link.sn
+                        );
                         link.current_rx = None;
                         break 'rx;
                     }
@@ -468,8 +491,8 @@ impl YipCentral {
 
             link.nesn = !link.nesn;
 
-            debug!("rx type {} len {}", rx_packet_type, buf.len());
-            debug!("rx data: {}", buf.data()[0..buf.len()]);
+            // debug!("rx type {} len {}", rx_packet_type, buf.len());
+            // debug!("rx data: {}", buf.data()[0..buf.len()]);
         }
 
         'tx_commit: {

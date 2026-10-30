@@ -52,7 +52,8 @@ async fn main(spawner: Spawner) {
         p.EGU2,
         Irqs,
         seed,
-    );
+    )
+    .with_central_completion_group(p.PPI_GROUP1);
 
     let sessions = yip::central::init::<LINKS>(device);
     yip::central::start();

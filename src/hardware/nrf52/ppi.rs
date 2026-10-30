@@ -14,6 +14,8 @@ use crate::hardware::clock::Nrf52Clock;
 use crate::hardware::egu::{Nrf52Egu, Trigger};
 
 pub(crate) const YIP_PPI_CHANNEL_COUNT: usize = 8;
+// READY fallback uses an EGU event whose interrupt is never enabled.
+const ACK_START: usize = 3;
 pub(crate) type PpiChannel<'d> = Peri<'d, AnyConfigurableChannel>;
 pub(crate) type PpiGroup<'d> = Peri<'d, AnyGroup>;
 
@@ -28,6 +30,8 @@ pub(crate) struct Nrf52Ppi {
     channels: [PpiChannel<'static>; YIP_PPI_CHANNEL_COUNT],
     mask: Chen,
     group: PpiGroup<'static>,
+    completion_group: Option<PpiGroup<'static>>,
+    completion_mask: u32,
 }
 
 impl Nrf52Ppi {
@@ -44,9 +48,16 @@ impl Nrf52Ppi {
             channels,
             mask,
             group: group.into(),
+            completion_group: None,
+            completion_mask: 0,
         };
         this.clear_all();
         this
+    }
+
+    pub(crate) fn set_central_completion_group(&mut self, group: PpiGroup<'static>) {
+        pac::PPI.chg(group.number()).write(|_| ());
+        self.completion_group = Some(group);
     }
 
     fn include_group(&mut self, channel: usize) {
@@ -105,6 +116,9 @@ impl PpiDriver for Nrf52Ppi {
     type Egu = Nrf52Egu;
 
     fn clear(&mut self) {
+        #[cfg(feature = "defmt")]
+        crate::hardware::clock::set_ack_timer(None);
+
         let ppi = embassy_nrf::pac::PPI;
 
         // 우선 채널을 모두 끈다.
@@ -112,10 +126,15 @@ impl PpiDriver for Nrf52Ppi {
 
         // 그룹에서 모든 채널을 제거한다.
         ppi.chg(self.group.number()).write(|_| ());
+        if let Some(group) = &self.completion_group {
+            ppi.chg(group.number()).write(|_| ());
+        }
+        self.completion_mask = 0;
     }
 
     fn enable(&mut self) {
-        pac::PPI.chenset().write_value(self.mask);
+        // Completion stays disarmed until the scheduled TX actually starts.
+        pac::PPI.chenset().write_value(Chen(self.mask.0 & !self.completion_mask));
     }
 
     fn disable(&mut self) {
@@ -123,6 +142,7 @@ impl PpiDriver for Nrf52Ppi {
     }
 
     fn configure_central(&mut self, clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
+        self.clear_all();
         let ppi = pac::PPI;
         let radio = pac::RADIO;
         let timer = clock.timer.regs();
@@ -133,6 +153,19 @@ impl PpiDriver for Nrf52Ppi {
         let group_num = self.group.number();
         let task_group_enable = ppi.tasks_chg(group_num).en();
         let task_group_disable = ppi.tasks_chg(group_num).dis();
+        let completion_num = self
+            .completion_group
+            .as_ref()
+            .expect("central requires a completion PPI group")
+            .number();
+        let completion_enable = ppi.tasks_chg(completion_num).en();
+        let completion_disable = ppi.tasks_chg(completion_num).dis();
+        self.completion_mask = (1u32 << self.channels[2].number())
+            | (1u32 << self.channels[3].number());
+        ppi.chg(completion_num).write(|w| {
+            w.set_ch(self.channels[2].number(), true);
+            w.set_ch(self.channels[3].number(), true);
+        });
 
         // timer.comp0 -> radio.txen, group.en
         self.connect(
@@ -152,19 +185,19 @@ impl PpiDriver for Nrf52Ppi {
         );
         self.include_group(1);
 
-        // (timer.comp1 | radio.crcok) -> (egu.trigger0 -> SWI)
+        // First completion disarms both CRCOK and timeout before ISR dispatch.
         self.connect(
             2,
             timer.events_compare(1),
             egu.tasks_trigger(timeslot_end),
-            Some(task_group_disable),
+            Some(completion_disable),
         );
 
         self.connect(
             3,
             radio.events_crcok(),
             egu.tasks_trigger(timeslot_end),
-            None,
+            Some(completion_disable),
         );
 
         // egu.triggered0 -> (radio.disable)
@@ -178,6 +211,9 @@ impl PpiDriver for Nrf52Ppi {
         // configure_central()
         self.connect(5, radio.events_end(), timer.tasks_capture(2), None);
         self.include_group(5);
+
+        // A PPI channel has one fork; use a spare channel for the second group.
+        self.connect(6, timer.events_compare(0), completion_enable, None);
     }
 
     fn configure_sync(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
@@ -242,6 +278,24 @@ impl PpiDriver for Nrf52Ppi {
 
         self.clear();
 
+        // RX starts automatically; ACK TX waits in TXIDLE until its buffer
+        // and completion route have been installed.
+        radio.shorts().modify(|w| {
+            w.set_ready_start(false);
+            w.set_txready_start(false);
+            w.set_rxready_start(true);
+        });
+
+        #[cfg(feature = "defmt")]
+        {
+            // Keep counting until ACK setup so sleep/wakeup time is measured.
+            timer.shorts().modify(|w| {
+                w.set_compare_stop(1, false);
+                w.set_compare_clear(1, false);
+            });
+            crate::hardware::clock::set_ack_timer(Some(timer));
+        }
+
         // rtc.comp0 -> (timer.start, group.en)
         let mut channels = self.connect(
             0,
@@ -264,6 +318,8 @@ impl PpiDriver for Nrf52Ppi {
             egu.tasks_trigger(timeslot_end),
             Some(task_group_disable),
         );
+        #[cfg(feature = "defmt")]
+        self.include_group(3);
         channels |= self.connect(
             4,
             radio.events_crcerror(),
@@ -276,6 +332,9 @@ impl PpiDriver for Nrf52Ppi {
             5,
             radio.events_crcok(),
             egu.tasks_trigger(timeslot_end),
+            #[cfg(feature = "defmt")]
+            Some(timer.tasks_capture(3)),
+            #[cfg(not(feature = "defmt"))]
             None,
         );
 
@@ -284,6 +343,9 @@ impl PpiDriver for Nrf52Ppi {
             6,
             egu.events_triggered(timeslot_end),
             radio.tasks_disable(),
+            #[cfg(feature = "defmt")]
+            None,
+            #[cfg(not(feature = "defmt"))]
             Some(timer.tasks_shutdown()),
         );
 
@@ -305,13 +367,39 @@ impl PpiDriver for Nrf52Ppi {
 
         self.clear();
 
-        let channels = self.connect(
+        let completion = self.connect(
             0,
             radio.events_disabled(),
             egu.tasks_trigger(Trigger::TimeslotEnd as usize),
             None,
         );
 
-        self.enable_channels(channels);
+        self.enable_channels(completion);
+
+        egu.events_triggered(ACK_START).write_value(0);
+        let group_disable = pac::PPI.tasks_chg(self.group.number()).dis();
+        self.include_group(1);
+        self.include_group(2);
+        let mut start = self.connect(
+            1,
+            radio.events_txready(),
+            radio.tasks_start(),
+            Some(group_disable),
+        );
+        start |= self.connect(
+            2,
+            egu.events_triggered(ACK_START),
+            radio.tasks_start(),
+            Some(group_disable),
+        );
+
+        // Make ACK buffer/register writes visible before permitting DMA START.
+        cortex_m::asm::dsb();
+        self.enable_channels(start);
+        // READY may have occurred before the PPI route was enabled. Use the
+        // same one-shot group so hardware and fallback cannot start twice.
+        if radio.state().read().state() == pac::radio::vals::State::TxIdle {
+            egu.tasks_trigger(ACK_START).write_value(1);
+        }
     }
 }

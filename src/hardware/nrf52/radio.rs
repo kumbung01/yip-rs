@@ -157,7 +157,6 @@ impl RadioDriver for Nrf52Radio {
     }
 
     fn set_rxaddress(&mut self, pipe: u8) {
-        debug!("setting address to {}", pipe);
         pac::RADIO
             .rxaddresses()
             .write_value(Rxaddresses(1u32 << pipe));

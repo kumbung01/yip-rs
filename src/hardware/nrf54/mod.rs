@@ -1,4 +1,4 @@
-//! nRF54LM20 backend. Hardware support has not been ported yet.
+//! nRF54LM20 central/peripheral backend using GRTC, TIMER10 and DPPI/PPIB.
 
 pub(crate) mod clock;
 #[cfg(feature = "defmt")]

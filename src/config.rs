@@ -1,14 +1,11 @@
-#[cfg(feature = "nrf52840")]
 use core::mem::size_of;
 use embassy_nrf::pac::{radio::vals as radiovals, timer::vals as timervals};
 use embassy_nrf::timer::Frequency;
 
 use crate::config::RadioBitrate::*;
-#[cfg(feature = "nrf52840")]
 use crate::packetbuffer::PacketBuffer;
 
 #[derive(PartialEq, Eq)]
-#[cfg_attr(feature = "nrf54lm20", allow(dead_code))] // nRF54 peripheral synchronization is not ported yet.
 pub(crate) enum UpdateResult {
     Skipped,
     Updated,
@@ -17,7 +14,7 @@ pub(crate) enum UpdateResult {
 
 // Yip limits
 pub(crate) const YIP_MAX_LINK_COUNT: usize = 7;
-pub(crate) const YIP_POOL_SIZE: usize = 16;
+pub(crate) const YIP_POOL_SIZE: usize = 8;
 
 // Yip configs
 pub(crate) const YIP_SLOTSIZE_US: u64 = 500;
@@ -25,21 +22,17 @@ pub(crate) const YIP_PACKET_SIZE: usize = 251;
 pub(crate) const YIP_SUB_PACKET_SIZE: usize = 20;
 pub(crate) const CHANNELS: u32 = 39; // 39 channels
 // pub(crate) const DRIFT_LIMIT_US: u32 = 30;
-#[cfg(feature = "nrf52840")]
 pub(crate) const DRIFT_LIMIT_US: u32 = 50;
 
 // timeslot constants
 pub(crate) const ISR_MARGIN_US: u32 = 20;
 pub(crate) const HEARTBEAT_DURATION_US: u32 = 500_000;
-#[cfg(feature = "nrf52840")]
 pub(crate) const PERIPHEARL_SYNC_DURATION_US: u32 = 750_000;
-#[cfg(feature = "nrf52840")]
 pub(crate) const PERIPHERAL_SYNC_TIMETOUT_US: u32 = 250_000;
 
 pub(crate) const TIMEOUT_MARGIN_US: u32 = 20;
 pub(crate) const TIMESLOT_MARGIN_US: u32 = 5;
-#[cfg(feature = "nrf52840")]
-pub(crate) const RX_WINDOW_MARGIN_US: u32 = 10;
+pub(crate) const RX_WINDOW_MARGIN_US: u32 = 20;
 
 pub(crate) const TIMEOUT_LIMIT_US_CENTRAL: u32 = 1000_000;
 pub(crate) const TIMEOUT_LIMIT_US_PERIPHERAL: u32 = 500_000;
@@ -74,11 +67,13 @@ pub(crate) const RADIO_ADDR_BASE_0: [u8; 4] = [0xE7, 0xE7, 0xE7, 0xE7];
 pub(crate) const RADIO_ADDR_BASE_1: [u8; 4] = [0xC2, 0xC2, 0xC2, 0xC2];
 
 // scale between timer and rtc.
+#[cfg(feature = "nrf52840")]
 pub(crate) const TIMER_TICK_SCALED: u32 = 32 * (1 << TIMER_PRESCALE);
 
 // timer configs
 pub(crate) const TIMER_BITMODE: timervals::Bitmode = timervals::Bitmode::_32bit;
 pub(crate) const TIMER_FREQUENCY: Frequency = Frequency::F1MHz;
+#[cfg(feature = "nrf52840")]
 pub(crate) const TIMER_PRESCALE: u32 = TIMER_FREQUENCY as u32;
 
 // rtc configs
@@ -170,7 +165,6 @@ pub(crate) const RADIO_PREAMBLE_BITS: u32 = RADIO_PREAMBLE_BYTES as u32 * 8;
 pub(crate) const ADDR_DELAY_TICKS: u32 = RADIO_RAMPUP_TIMER_TICKS
     + (RADIO_PREAMBLE_BITS + RADIO_ADDR_BITS) * TIMER_TICKS_PER_US / RADIO_BITS_PER_US;
 
-#[cfg(feature = "nrf52840")]
 pub(crate) const PACKETBUF_AIRTIME_TICKS: u32 =
     (size_of::<PacketBuffer>() as u32 + RADIO_CRC_LEN_BYTES) * TIMER_TICKS_PER_BYTE;
 

@@ -22,6 +22,7 @@ const LINKS: usize = 2;
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let mut config = Config::default();
+    config.clock_speed = embassy_nrf::config::ClockSpeed::CK128;
     config.hfclk_source = HfclkSource::ExternalXtal;
     config.lfclk_source = LfclkSource::ExternalXtal;
 
@@ -39,10 +40,19 @@ async fn main(spawner: Spawner) {
         p.RADIO,
         p.TIMER10,
         p.GRTC_CH0,
-        ppi_channels![p.PPI10_CH0, p.PPI10_CH1, p.PPI10_CH2],
+        ppi_channels![
+            p.PPI10_CH0,
+            p.PPI10_CH1,
+            p.PPI10_CH2,
+            p.PPI10_CH3,
+            p.PPI10_CH4
+        ],
         ppi_channels![p.PPI20_CH0],
         (p.PPIB21_CH0, p.PPIB11_CH0),
-        core::convert::Into::into(p.PPI10_GROUP0),
+        [
+            core::convert::Into::into(p.PPI10_GROUP0),
+            core::convert::Into::into(p.PPI10_GROUP1),
+        ],
         Irqs,
         seed,
     );
