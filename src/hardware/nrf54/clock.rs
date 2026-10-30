@@ -1,24 +1,21 @@
 use crate::hardware::api::{ClockDriver, ClockTimestamp};
 
 use core::marker::PhantomData;
-use core::ops::Sub;
 use embassy_time::Instant;
 
 use embassy_nrf::{
-    Peri, PeripheralType,
-    pac::GRTC,
-    peripherals,
+    Peri, PeripheralType, peripherals,
     timer::{Instance as TimerInstance, Timer},
 };
 
+use crate::config::*;
 use crate::pdu::*;
-use crate::{config::*, hardware::cyccnt};
 
 /*
  * Clock handles all timing related functions.
  */
 
-pub(crate) trait GrtcChannel: PeripheralType + 'static {
+pub trait GrtcChannel: PeripheralType + 'static {
     const NUMBER: usize;
 }
 
@@ -69,25 +66,17 @@ pub(crate) struct Timestamp {
 }
 
 impl ClockTimestamp for Timestamp {
+    #[cfg(feature = "defmt")]
     fn unscaled(&self) -> Timestamp {
         Timestamp { us: self.us }
     }
-}
-
-#[derive(Default, Clone, Copy)]
-pub(crate) struct SlotClock {
-    pub(crate) slot: u32,
-    pub(crate) timestamp: u64,
 }
 
 pub(crate) struct Nrf54Clock {
     grtc: GrtcCc<'static>,
     pub(crate) timer: Timer<'static>,
     ts: Timestamp,
-    slot: u32,
 }
-
-pub(crate) struct SlotDiff(u32);
 
 impl Nrf54Clock {
     pub fn new<G: GrtcChannel, T: TimerInstance>(
@@ -106,7 +95,6 @@ impl Nrf54Clock {
             grtc: GrtcCc::new(grtc),
             timer: timer,
             ts: Timestamp { us: 0 },
-            slot: 0,
         }
     }
 }
@@ -119,33 +107,20 @@ impl Nrf54Clock {
 }
 
 // central impl
-impl Nrf54Clock {
-    pub(crate) fn get_timeout(&self) -> u32 {
-        self.timer.cc(0).read()
-    }
-
-    pub(crate) fn get_now_central(&self) -> Timestamp {
-        let us = Instant::now().as_micros();
-
-        Timestamp { us: us }
-    }
-}
 
 pub(crate) type Timing = crate::hardware::api::clock::Timing<Timestamp>;
-
-fn unscale_timer(cc: u32) -> u32 {
-    todo!();
-}
 
 impl ClockDriver for Nrf54Clock {
     type Timestamp = Timestamp;
     type Timing = Timing;
+    #[cfg(feature = "defmt")]
     type PeripheralInstant = u64;
 
     fn get_start_ts(&self) -> Timestamp {
         self.ts
     }
 
+    #[cfg(feature = "defmt")]
     fn get_start_hw(&mut self) -> Timestamp {
         Timestamp {
             us: Instant::now().as_micros(),
@@ -208,10 +183,6 @@ impl ClockDriver for Nrf54Clock {
         timeout_ticks
     }
 
-    fn get_start_central(&self) -> Timestamp {
-        self.ts
-    }
-
     fn start_peripheral(&mut self) {
         todo!();
     }
@@ -220,6 +191,7 @@ impl ClockDriver for Nrf54Clock {
         todo!();
     }
 
+    #[cfg(feature = "defmt")]
     fn get_now_peripheral(&self) -> u64 {
         todo!();
     }
@@ -228,11 +200,11 @@ impl ClockDriver for Nrf54Clock {
         todo!();
     }
 
-    fn set_next_pre_slot(&mut self, tm: &Timing) {
+    fn set_next_pre_slot(&mut self, _tm: &Timing) {
         todo!();
     }
 
-    fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
+    fn set_next_slot_peripheral(&mut self, _tm: &Timing) -> Result<(u32, u32), ()> {
         todo!();
     }
 
@@ -240,11 +212,11 @@ impl ClockDriver for Nrf54Clock {
         todo!();
     }
 
-    fn update_sync(&self, tm: &mut Timing) -> UpdateResult {
+    fn update_sync(&self, _tm: &mut Timing) -> UpdateResult {
         todo!();
     }
 
-    fn update_timestamp_by_sync(ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
+    fn update_timestamp_by_sync(_ts: Timestamp, _sync: u32) -> Result<Timestamp, ()> {
         todo!();
     }
 }

@@ -1,6 +1,7 @@
 //! Chip-specific hardware selected by the application's Cargo feature.
 
 pub(crate) mod api;
+mod context;
 
 #[cfg(all(feature = "nrf52840", feature = "nrf54lm20"))]
 compile_error!("Select only one chip feature: nrf52840 or nrf54lm20.");

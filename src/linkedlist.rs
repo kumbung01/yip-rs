@@ -2,7 +2,7 @@ use core::{
     cell::{Cell, RefCell, UnsafeCell},
     future::poll_fn,
     marker::PhantomData,
-    mem::{self, ManuallyDrop},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     task::Poll,
 };
@@ -228,7 +228,6 @@ impl<T: Reset, R: RawMutex, const N: usize> PoolInner<T, R, N> {
         &self.nodes
     }
 
-    #[allow(dead_code)]
     unsafe fn release_list(&self, list: IndexList) -> usize {
         let Some(head) = list.head else {
             return 0;
@@ -542,23 +541,6 @@ macro_rules! static_pool {
             }
         }
 
-        impl $name {
-            // SAFETY: list는 이 풀에서 분리한 독점 소유 체인이어야 한다.
-            #[allow(dead_code)]
-            pub(crate) unsafe fn release_list(
-                list: $crate::linkedlist::IndexList,
-            ) {
-                let storage =
-                    <Self as $crate::linkedlist::StaticPool>::storage();
-
-                unsafe {
-                    $crate::linkedlist::PoolAccess::release_list(
-                        storage,
-                        list,
-                    );
-                }
-            }
-        }
     };
 }
 

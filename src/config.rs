@@ -1,13 +1,14 @@
-#![allow(dead_code)]
+#[cfg(feature = "nrf52840")]
 use core::mem::size_of;
 use embassy_nrf::pac::{radio::vals as radiovals, timer::vals as timervals};
 use embassy_nrf::timer::Frequency;
 
 use crate::config::RadioBitrate::*;
-use crate::hardware::radio::*;
+#[cfg(feature = "nrf52840")]
 use crate::packetbuffer::PacketBuffer;
 
 #[derive(PartialEq, Eq)]
+#[cfg_attr(feature = "nrf54lm20", allow(dead_code))] // nRF54 peripheral synchronization is not ported yet.
 pub(crate) enum UpdateResult {
     Skipped,
     Updated,
@@ -24,16 +25,20 @@ pub(crate) const YIP_PACKET_SIZE: usize = 251;
 pub(crate) const YIP_SUB_PACKET_SIZE: usize = 20;
 pub(crate) const CHANNELS: u32 = 39; // 39 channels
 // pub(crate) const DRIFT_LIMIT_US: u32 = 30;
+#[cfg(feature = "nrf52840")]
 pub(crate) const DRIFT_LIMIT_US: u32 = 50;
 
 // timeslot constants
 pub(crate) const ISR_MARGIN_US: u32 = 20;
 pub(crate) const HEARTBEAT_DURATION_US: u32 = 500_000;
+#[cfg(feature = "nrf52840")]
 pub(crate) const PERIPHEARL_SYNC_DURATION_US: u32 = 750_000;
+#[cfg(feature = "nrf52840")]
 pub(crate) const PERIPHERAL_SYNC_TIMETOUT_US: u32 = 250_000;
 
 pub(crate) const TIMEOUT_MARGIN_US: u32 = 20;
 pub(crate) const TIMESLOT_MARGIN_US: u32 = 5;
+#[cfg(feature = "nrf52840")]
 pub(crate) const RX_WINDOW_MARGIN_US: u32 = 10;
 
 pub(crate) const TIMEOUT_LIMIT_US_CENTRAL: u32 = 1000_000;
@@ -47,6 +52,7 @@ pub enum RadioBitrate {
     _4mbit,
 }
 
+#[allow(dead_code)] // Both ramp-up modes remain valid configuration choices.
 pub enum RadioRampup {
     Normal,
     Fast,
@@ -76,6 +82,7 @@ pub(crate) const TIMER_FREQUENCY: Frequency = Frequency::F1MHz;
 pub(crate) const TIMER_PRESCALE: u32 = TIMER_FREQUENCY as u32;
 
 // rtc configs
+#[cfg(feature = "nrf52840")]
 pub(crate) const RTC_PRESCALE: u32 = 0;
 
 // rssi configs
@@ -84,15 +91,16 @@ pub(crate) const RSSI_DIFF_THRESHOLD_UP: i16 = 4;
 pub(crate) const RSSI_DIFF_THRESHOLD_DN: i16 = -2;
 
 pub(crate) const TX_POWER_INITIAL_DB: radiovals::Txpower = radiovals::Txpower::_0dBm;
-pub(crate) const TX_POWER_INITIAL_INDEX: usize = 2;
 pub(crate) const TX_POWER_SAMPLE_CNT: u8 = 8;
 
 // constants for peripherals
 
 // RTC CC has to be set at least 3 ticks before triggered.
+#[cfg(feature = "nrf52840")]
 const RTC_COMPARE_MARGIN_TICKS: u32 = 3;
 
 // radio derived constants
+#[cfg(feature = "nrf52840")]
 pub(crate) const RADIO_MARGIN_RTC_TICKS: u32 = {
     let ticks = us_to_rtc_ticks(ISR_MARGIN_US);
     if ticks < RTC_COMPARE_MARGIN_TICKS as u64 {
@@ -101,7 +109,6 @@ pub(crate) const RADIO_MARGIN_RTC_TICKS: u32 = {
         ticks as u32
     }
 };
-pub(crate) const TIMESLOT_WDT_MARGIN_RTC_TICKS: u32 = RADIO_MARGIN_RTC_TICKS + 1;
 
 pub(crate) const RADIO_CRC_LEN_BYTES: u32 = match RADIO_CRC_LEN_MODE {
     radiovals::Len::Disabled => 0,
@@ -115,6 +122,7 @@ pub(crate) const RADIO_RAMPUP_US: u32 = match YIP_RADIO_RAMPUP_MODE {
     RadioRampup::Fast => 40,
 };
 
+#[cfg(feature = "nrf52840")]
 pub(crate) const RTC_TICK_HZ: u64 = {
     assert!(RTC_PRESCALE <= 4095);
     assert!(32_768 % (RTC_PRESCALE as u64 + 1) == 0);
@@ -130,7 +138,6 @@ pub(crate) const TIMER_TICKS_PER_US: u32 = {
 };
 
 pub(crate) const TIMEOUT_MARGIN_TIMER_TICKS: u32 = TIMEOUT_MARGIN_US * TIMER_TICKS_PER_US;
-pub(crate) const DRIFT_LIMIT_TIMER_TICKS: i32 = (DRIFT_LIMIT_US * TIMER_TICKS_PER_US) as i32;
 
 pub(crate) const RADIO_BITS_PER_US: u32 = match YIP_RADIO_BITRATE {
     _1mbit => 1,
@@ -160,15 +167,15 @@ pub(crate) const RADIO_PREAMBLE_BYTES: u8 = match RADIO_PREAMBLE_LEN_MODE {
 };
 pub(crate) const RADIO_PREAMBLE_BITS: u32 = RADIO_PREAMBLE_BYTES as u32 * 8;
 
-pub(crate) const ADDR_DELAY_US: u32 = RADIO_RAMPUP_US
-    + (RADIO_PREAMBLE_BITS + RADIO_ADDR_BITS) * TIMER_TICKS_PER_US / RADIO_BITS_PER_US;
 pub(crate) const ADDR_DELAY_TICKS: u32 = RADIO_RAMPUP_TIMER_TICKS
     + (RADIO_PREAMBLE_BITS + RADIO_ADDR_BITS) * TIMER_TICKS_PER_US / RADIO_BITS_PER_US;
 
+#[cfg(feature = "nrf52840")]
 pub(crate) const PACKETBUF_AIRTIME_TICKS: u32 =
     (size_of::<PacketBuffer>() as u32 + RADIO_CRC_LEN_BYTES) * TIMER_TICKS_PER_BYTE;
 
 // RTC_TICK_HZ는 실제 RTC 주파수 상수 이름에 맞춰 사용
+#[cfg(feature = "nrf52840")]
 pub(crate) const RTC_TICK_SCALED: u64 = {
     let scaled_timer_hz = TIMER_TICKS_PER_US as u64 * 1_000_000 * TIMER_TICK_SCALED as u64;
 
@@ -178,13 +185,12 @@ pub(crate) const RTC_TICK_SCALED: u64 = {
     scaled_timer_hz / RTC_TICK_HZ
 };
 
-pub(crate) const SLOTSIZE_TIMER_TICKS: u32 = YIP_SLOTSIZE_US as u32 * TIMER_TICKS_PER_US;
-pub(crate) const SLOTSIZE_TIMER_TICKS_SCALED: u32 = SLOTSIZE_TIMER_TICKS * TIMER_TICK_SCALED;
-
+#[cfg(feature = "nrf52840")]
 pub(crate) const RTC_MARGIN_SCALED: u32 = RADIO_MARGIN_RTC_TICKS * RTC_TICK_SCALED as u32;
 
 // helper functions
 #[inline]
+#[cfg(feature = "nrf52840")]
 pub(crate) const fn us_to_rtc_ticks(us: u32) -> u64 {
     (us as u64 * RTC_TICK_HZ).div_ceil(1_000_000)
 }
@@ -193,50 +199,19 @@ pub(crate) const fn us_to_timer_ticks(us: u32) -> u64 {
     us as u64 * TIMER_TICKS_PER_US as u64
 }
 
-#[inline]
-pub(crate) const fn ms_to_rtc_ticks(ms: u32) -> u64 {
-    (ms as u64 * RTC_TICK_HZ).div_ceil(1_000)
-}
-
-pub(crate) const fn ms_to_timer_ticks(ms: u32) -> u64 {
-    ms as u64 * 1_000 * TIMER_TICKS_PER_US as u64
-}
-
-#[inline]
-pub(crate) const fn rtc_ticks_to_us(ticks: u32) -> u64 {
-    ticks as u64 * 1_000_000 / RTC_TICK_HZ
-}
-
-#[inline]
-pub(crate) const fn rtc_ticks_to_ms(ticks: u32) -> u64 {
-    ticks as u64 * 1_000 / RTC_TICK_HZ
-}
-
-#[inline]
-pub(crate) const fn timer_ticks_to_us(ticks: u32) -> u64 {
-    ticks as u64 * 1_000_000 / TIMER_TICK_HZ
-}
-
-#[inline]
-pub(crate) const fn timer_ticks_to_ms(ticks: u32) -> u64 {
-    ticks as u64 * 1_000 / TIMER_TICK_HZ
-}
-
+#[cfg(feature = "nrf52840")]
 pub(crate) const RTC_MASK: u32 = 0x00FF_FFFF;
 
 #[inline]
+#[cfg(feature = "nrf52840")]
 pub(crate) const fn rtc_wrap(value: u32) -> u32 {
     value & RTC_MASK
 }
 
 #[inline]
+#[cfg(feature = "nrf52840")]
 pub(crate) const fn rtc_elapsed(now: u32, since: u32) -> u32 {
     rtc_wrap(now.wrapping_sub(since))
-}
-
-#[inline]
-pub(crate) const fn timer_elapsed_us(now: u32, since: u32) -> u32 {
-    timer_ticks_to_us(now.wrapping_sub(since)) as u32
 }
 
 pub(crate) const fn index_of(values: &[radiovals::Txpower], target: radiovals::Txpower) -> usize {

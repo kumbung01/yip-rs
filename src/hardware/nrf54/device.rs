@@ -1,12 +1,12 @@
 use crate::hardware::api::{EguDriver, RadioDriver};
 use crate::hardware::clock::{GrtcChannel, Nrf54Clock};
+use crate::hardware::context::SlotContext;
 use crate::hardware::egu::Nrf54Egu;
 use crate::hardware::ppi::{
     Channel, Group as PpiGroup, Nrf54Ppi, PeriDomain, Radio as RadioDomain,
 };
 use crate::hardware::radio::Nrf54Radio;
-use crate::pdu::{PduByte0, PduByte1};
-use crate::{config::*, register_egu};
+use crate::register_egu;
 
 use core::marker::PhantomData;
 use embassy_nrf::ppib::BridgeChannel;
@@ -16,33 +16,6 @@ use embassy_nrf::{
     peripherals::RADIO,
     timer::Instance as TimerInstance,
 };
-
-#[derive(Default)]
-pub(crate) struct SlotContext {
-    pub refslot: u32,
-    pub slot_ticks: u32,
-    pub pipes: usize,
-}
-
-impl SlotContext {
-    pub(crate) fn calculate_timeout_timer(&self, packet_len: usize) -> u32 {
-        const HEADER_BITS: u32 = PduByte0::LENGTH_BIT_COUNT as u32 + PduByte1::S1_BITS as u32;
-
-        const HEADER_TICKS: u32 = {
-            assert!(RADIO_BITS_PER_US > 0);
-
-            (HEADER_BITS * TIMER_TICKS_PER_US).div_ceil(RADIO_BITS_PER_US)
-        };
-
-        let my_tx_ticks =
-            ADDR_DELAY_TICKS + HEADER_TICKS + (packet_len as u32 + 2) * TIMER_TICKS_PER_BYTE;
-        let ur_tx_ticks = ADDR_DELAY_TICKS
-            + HEADER_TICKS
-            + (YIP_SUB_PACKET_SIZE as u32 + 2) * TIMER_TICKS_PER_BYTE;
-
-        my_tx_ticks + ur_tx_ticks + TIMEOUT_MARGIN_TIMER_TICKS
-    }
-}
 
 /// Hardware resources with a validated interrupt binding to handler `H`.
 pub struct DeviceContext<H> {
@@ -72,9 +45,10 @@ impl<H> DeviceContext<H> {
         B: BridgeChannel,
         H: Handler<EGU10>,
     {
-        // we set refslot random here.
-        let mut context = SlotContext::default();
-        context.refslot = seed;
+        let context = SlotContext {
+            refslot: seed,
+            ..SlotContext::default()
+        };
 
         #[cfg(feature = "defmt")]
         defmt::debug!("seed: {}", seed);
@@ -87,11 +61,11 @@ impl<H> DeviceContext<H> {
         radio.init();
 
         Self {
-            radio: radio,
+            radio,
             clock: Nrf54Clock::new(grtc, timer),
             ppi: Nrf54Ppi::new(radio_channels, peri_channels, bridge, group),
-            egu: egu,
-            context: context,
+            egu,
+            context,
             _handler: PhantomData,
         }
     }

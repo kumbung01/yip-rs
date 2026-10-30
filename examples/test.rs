@@ -6,16 +6,14 @@ use embassy_futures::select::{Either, select};
 use embassy_nrf::bind_interrupts;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_sync::channel::Channel;
-use yip::YipDevice;
+use yip::DeviceContext;
 use yip::YipSession;
 
 use yip::ppi_channels;
-use yip::random_u32;
 use yip::{YipReader, YipWriter};
 
 use embassy_executor::Spawner;
 
-use yip::central::YipCentral as Role;
 use yip::central::YipInterruptHandler;
 const LINKS: usize = 2;
 
@@ -25,9 +23,9 @@ const LINKS: usize = 2;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let mut p = embassy_nrf::init(Default::default());
+    let p = embassy_nrf::init(Default::default());
 
-    let seed = random_u32(&mut p.RNG);
+    let seed = embassy_nrf::rng::Rng::new_blocking(p.RNG).blocking_next_u32();
 
     let clock = embassy_nrf::pac::CLOCK;
 
@@ -43,7 +41,7 @@ async fn main(spawner: Spawner) {
         }
     );
 
-    let device = YipDevice::new(
+    let device = DeviceContext::new(
         p.RADIO,
         p.TIMER2,
         p.RTC2,
@@ -56,18 +54,8 @@ async fn main(spawner: Spawner) {
         seed,
     );
 
-    // let sessions = yip::init_yip! {
-    //     device: device,
-    //     links: 1,
-    //     role: yip::peripheral::YipPeripheral,
-    //     id: 0
-    // };
-    let sessions = yip::init_yip! {
-        device: device,
-        links: LINKS,
-        role: Role,
-        id: 0
-    };
+    let sessions = yip::central::init::<LINKS>(device);
+    yip::central::start();
 
     let b1 = Input::new(p.P0_11, Pull::Up);
     let b2 = Input::new(p.P0_12, Pull::Up);

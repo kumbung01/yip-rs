@@ -1,11 +1,13 @@
-use crate::hardware::api::{ClockDriver, ClockTimestamp, EguDriver, PpiDriver, RadioDriver};
+#[cfg(feature = "defmt")]
+use crate::hardware::api::ClockTimestamp;
+use crate::hardware::api::{ClockDriver, EguDriver, PpiDriver, RadioDriver};
 use core::cell::RefCell;
-use core::slice;
 use embassy_nrf::interrupt::{self, InterruptExt};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 use crate::hardware::Clock;
 use crate::hardware::clock::Timing;
+#[cfg(feature = "defmt")]
 use crate::hardware::cyccnt::{self, Cycle};
 use crate::hardware::device::DeviceContext;
 use crate::hardware::egu::Trigger::*;
@@ -14,15 +16,11 @@ use crate::session::YipSession;
 use crate::{config::*, enable_start};
 
 use crate::hop::get_channel;
-use crate::link::{
-    Link,
-    LinkState::{self, *},
-    LinkSubstate::*,
-};
+use crate::link::{Link, LinkState::*, LinkSubstate::*};
 
 use crate::packet::*;
 use crate::packetbuffer::*;
-use crate::payload::{ControlCommand, ControlHeader, DownHeader, Payload, SyncPacket, UpHeader};
+use crate::payload::{ControlCommand, DownHeader, Payload, SyncPacket, UpHeader};
 use crate::pdu::PacketKind;
 use crate::pdu::PacketType;
 use crate::role::private::*;
@@ -127,6 +125,7 @@ pub fn stop() {
 }
 
 pub fn init(device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
+    #[cfg(feature = "defmt")]
     crate::hardware::cyccnt::init();
 
     let irq = device.egu.irq();
@@ -267,7 +266,6 @@ impl YipPeripheral {
         let DeviceContext {
             radio,
             clock,
-            ppi,
             context: ctx,
             ..
         } = &mut self.device;
@@ -442,8 +440,6 @@ impl YipPeripheral {
         let tm = &mut self.timing;
         let ep = CHANNELS.link_ep(0);
 
-        let start = cyccnt::start();
-
         let events = radio.take_interrupt_events();
         if !events.crc_ok {
             // do some timeout handle here
@@ -512,6 +508,7 @@ impl YipPeripheral {
             return;
         };
 
+        #[cfg(feature = "defmt")]
         let mut end = Cycle(0);
         let rx_outcome: Option<(CurrentRx, &[u8])> = 'rx_retry: {
             if is_retransmit_payload {
@@ -532,7 +529,7 @@ impl YipPeripheral {
                         match command {
                             ControlCommand::Sync => {
                                 // noop, for now
-                                defmt::error!("peripheral should not send this");
+                                error!("peripheral should not send this");
                             }
                         }
 
@@ -552,9 +549,13 @@ impl YipPeripheral {
                         }
 
                         let rx_packet = link.current_rx.take().or_else(|| {
+                            #[cfg(feature = "defmt")]
                             let start = cyccnt::start();
                             let packet = ep.rx.try_acquire();
-                            end = cyccnt::end(start);
+                            #[cfg(feature = "defmt")]
+                            {
+                                end = cyccnt::end(start);
+                            }
                             packet.map(CurrentPacket::new)
                         });
 
@@ -700,6 +701,7 @@ impl YipPeripheral {
         egu.select_interrupt(TimeslotEnd);
         self.state = PeripheralState::TxAck;
 
+        #[cfg(feature = "defmt")]
         if end.0 > 0 {
             defmt::info!("acquire cycles: {}, us: {}", end.as_cycles(), end.as_us());
         }

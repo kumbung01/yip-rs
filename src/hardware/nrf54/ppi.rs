@@ -1,7 +1,5 @@
 use crate::hardware::api::{EguDriver, PpiDriver};
 
-use core::sync::atomic::{Ordering, compiler_fence};
-
 use embassy_nrf::{
     Peri,
     pac::{
@@ -142,15 +140,6 @@ impl PpiDriver for Nrf54Ppi {
 
         let trigger = Trigger::TimeslotEnd as usize;
 
-        let test_ch1 = unsafe { Channel::<Radio>::from_num(3) };
-        // this is test code!!!
-        // this checks when rxaddress has been captured.
-        Self::connect(
-            &test_ch1,
-            &[radio.publish_rxaddress()],
-            &[timer.subscribe_capture(1)],
-        );
-
         // Configure group membership before enabling group subscriptions.
         self.group.include(self.radio_channels.number(1));
 
@@ -182,9 +171,6 @@ impl PpiDriver for Nrf54Ppi {
             &[
                 egu.subscribe_trigger(trigger),
                 radio.subscribe_disable(),
-                // this is test code!!!
-                // this captures when crcok
-                timer.subscribe_capture(2),
                 timer.subscribe_stop(),
                 timer.subscribe_clear(),
             ],

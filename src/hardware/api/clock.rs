@@ -1,20 +1,25 @@
-use crate::config::{TIMER_TICK_SCALED, UpdateResult};
+#[cfg(feature = "nrf52840")]
+use crate::config::TIMER_TICK_SCALED;
+use crate::config::UpdateResult;
 
 /// Required hardware API. Every chip backend must implement all methods.
 pub(crate) trait ClockDriver {
     type Timestamp: ClockTimestamp;
     type Timing;
+    #[cfg(feature = "defmt")]
     type PeripheralInstant;
 
     fn get_start_ts(&self) -> Self::Timestamp;
+    #[cfg(feature = "defmt")]
     fn get_start_hw(&mut self) -> Self::Timestamp;
     fn start_central(&mut self);
     fn stop_central(&mut self);
     fn set_next_slot_central(&mut self) -> u32;
     fn set_timeout_central(&mut self, bytes: usize) -> u32;
-    fn get_start_central(&self) -> Self::Timestamp;
+
     fn start_peripheral(&mut self);
     fn stop_peripheral(&mut self);
+    #[cfg(feature = "defmt")]
     fn get_now_peripheral(&self) -> Self::PeripheralInstant;
     fn set_next_sync(&mut self) -> (u32, u32);
     fn set_next_pre_slot(&mut self, tm: &Self::Timing);
@@ -26,6 +31,7 @@ pub(crate) trait ClockDriver {
 
 /// Chip-specific timestamp conversion used by role diagnostics.
 pub(crate) trait ClockTimestamp: Sized {
+    #[cfg(feature = "defmt")]
     fn unscaled(&self) -> Self;
 }
 
@@ -42,6 +48,7 @@ pub(crate) struct Timing<T> {
 }
 
 impl<T> Timing<T> {
+    #[cfg(feature = "nrf52840")]
     pub(crate) fn set_drift(&mut self, drift: i32) {
         let error_scaled = drift * TIMER_TICK_SCALED as i32;
 
@@ -52,6 +59,7 @@ impl<T> Timing<T> {
         }
     }
 
+    #[cfg(feature = "nrf52840")]
     pub(crate) fn get_drift_scaled(&self) -> i32 {
         self.drift_scaled.unwrap_or(0)
     }

@@ -3,6 +3,10 @@ name = "yip"
 version = "0.1.0"
 edition = "2024"
 
+[[example]]
+name = "test"
+required-features = ["nrf52840", "defmt"]
+
 [dependencies]
 yip-macros = { path = "yip-macros" }
 cortex-m = "0.7"

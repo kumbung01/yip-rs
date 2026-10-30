@@ -1,25 +1,21 @@
 use crate::hardware::api::{ClockDriver, EguDriver, PpiDriver, RadioDriver};
 use core::cell::RefCell;
 use embassy_nrf::interrupt::{self, InterruptExt};
-use embassy_nrf::pac;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 use crate::link::LinkSubstate::{self, Normal};
 use crate::packet::YipSessionEndpoints;
 use crate::packetbuffer::PacketBuffer;
-use crate::payload::{ControlCommand, ControlHeader, DownHeader, Payload, SyncPacket, UpHeader};
+use crate::payload::{ControlCommand, ControlHeader, DownHeader, SyncPacket, UpHeader};
 use crate::pdu::PacketKind;
-use crate::pdu::PacketType::{self, *};
+use crate::pdu::PacketType::*;
 
 use crate::config::*;
 use crate::hardware::device::DeviceContext;
 use crate::hardware::egu::Trigger;
 use crate::hardware::impl_yip_egu_handlers;
 use crate::hop::get_channel;
-use crate::link::{
-    Link,
-    LinkState::{self, *},
-};
+use crate::link::{Link, LinkState::*};
 use crate::packet::CurrentPacket;
 use crate::packet::PacketChannels;
 use crate::role::private::*;
@@ -32,11 +28,7 @@ impl Alive {
     fn is_timeout(&mut self, slot_now: u32) -> bool {
         let limit_slots = TIMEOUT_LIMIT_US_CENTRAL.div_ceil(YIP_SLOTSIZE_US as u32);
 
-        if slot_now.wrapping_sub(self.0) >= limit_slots {
-            true
-        } else {
-            false
-        }
+        slot_now.wrapping_sub(self.0) >= limit_slots
     }
 
     fn update_alive(&mut self, slot_now: u32) {
@@ -63,6 +55,7 @@ impl Slot {
 }
 
 pub fn init<const W: usize>(device: DeviceContext<YipInterruptHandler>) -> [YipSession; W] {
+    #[cfg(feature = "defmt")]
     crate::hardware::cyccnt::init();
 
     let irq = device.egu.irq();
@@ -104,7 +97,6 @@ pub struct YipCentral {
     turn: usize,
     slots: [Slot; YIP_MAX_LINK_COUNT],
     device: DeviceContext<YipInterruptHandler>,
-    rxbuf: PacketBuffer,
 }
 
 #[repr(u8)]
@@ -204,7 +196,6 @@ impl YipCentral {
                 txbuf: PacketBuffer::new(),
                 pkind: PacketKind::Empty,
             }),
-            rxbuf: PacketBuffer::new(),
         };
 
         central.device.set_pipes(pipes);
@@ -213,7 +204,6 @@ impl YipCentral {
     }
 
     fn prepare_tx(&mut self) {
-        use crate::hardware::cyccnt;
         let DeviceContext {
             radio,
             clock,
@@ -227,11 +217,7 @@ impl YipCentral {
 
         self.state = CentralState::Tx;
 
-        let start = cyccnt::start();
-
         let slot_diff = clock.set_next_slot_central();
-
-        let slot_cycles = cyccnt::end(start);
 
         ctx.refslot = ctx.refslot.wrapping_add(slot_diff);
 
@@ -245,8 +231,6 @@ impl YipCentral {
             ..
         } = &mut self.slots[self.turn];
         let ep = CHANNELS.link_ep(self.turn);
-
-        let start = cyccnt::start();
 
         buf.clear();
         let mut body = buf.write_header::<Self>(DownHeader { rssi: rssi.get() });
@@ -296,8 +280,6 @@ impl YipCentral {
             },
         };
 
-        let packet_cycles = cyccnt::end(start);
-
         let pdu = &mut buf.pdu1;
 
         pdu.set_packet_type(packet_type);
@@ -321,35 +303,6 @@ impl YipCentral {
         egu.select_interrupt(Trigger::TimeslotEnd);
 
         ppi.enable();
-
-        //         #[cfg(feature = "defmt")]
-        //         {
-        //             debug!(
-        //                 "slot: {{{}, {}}}, packet: {{{}, {}}}",
-        //                 slot_cycles.as_cycles(),
-        //                 slot_cycles.as_us(),
-        //                 packet_cycles.as_cycles(),
-        //                 packet_cycles.as_us()
-        //             );
-        //
-        //             debug!(
-        //                 "now: {} start: {} timeout {} slot {} turn {} ch {} ",
-        //                 clock.get_now_central(),
-        //                 clock.get_start_ts(),
-        //                 _timeout,
-        //                 ctx.refslot,
-        //                 self.turn,
-        //                 channel
-        //             );
-        //
-        //             debug!(
-        //                 "len {} sn {} nesn {} type {}",
-        //                 buf.len(),
-        //                 buf.pdu1.sn(),
-        //                 buf.pdu1.nesn(),
-        //                 buf.pdu1.packet_type()
-        //             );
-        //         }
     }
 
     fn timeslot_end(&mut self) {
@@ -369,7 +322,7 @@ impl YipCentral {
             txbuf: buf,
             pkind,
         } = &mut self.slots[self.turn];
-        let mut ep = CHANNELS.link_ep(self.turn);
+        let ep = CHANNELS.link_ep(self.turn);
 
         let events = radio.take_interrupt_events();
 
@@ -390,18 +343,6 @@ impl YipCentral {
 
             self.prepare_tx();
             return;
-        }
-
-        #[cfg(feature = "nrf54lm20")]
-        {
-            debug!(
-                "rxaddr: {}, crcok: {}",
-                pac::TIMER10.cc(1).read(),
-                pac::TIMER10.cc(2).read()
-            );
-
-            pac::TIMER10.cc(1).write_value(0);
-            pac::TIMER10.cc(2).write_value(0);
         }
 
         alive.update_alive(ctx.refslot);
@@ -448,7 +389,7 @@ impl YipCentral {
                     match command {
                         ControlCommand::Sync => {
                             // noop, for now
-                            defmt::error!("peripheral should not send this");
+                            error!("peripheral should not send this");
                         }
                     }
                 }

@@ -29,15 +29,13 @@ pub(crate) trait EguDriver {
     fn clear_triggered_regs(regs: &Self::Registers, trigger: Trigger);
     fn trigger_regs(regs: &Self::Registers, trigger: Trigger);
     fn is_triggered_regs(regs: &Self::Registers, trigger: Trigger) -> bool;
-    fn is_enabled_regs(regs: &Self::Registers, trigger: Trigger) -> bool;
-    fn get_enabled_regs(regs: &Self::Registers) -> Option<Trigger>;
-    fn enable_interrupt(&mut self, trigger: Trigger);
+
     fn disable_interrupt(&mut self, trigger: Trigger);
     fn select_interrupt(&mut self, trigger: Trigger);
     fn clear_triggered(&mut self, trigger: Trigger);
-    fn trigger(&mut self, trigger: Trigger);
+
     fn is_triggered(&self, trigger: Trigger) -> bool;
-    fn is_enabled(&self, trigger: Trigger) -> bool;
+
     fn get_enabled(&self) -> Option<Trigger>;
     fn get_and_clear_triggered(&mut self) -> Option<Trigger>;
     fn clear_all(&mut self);

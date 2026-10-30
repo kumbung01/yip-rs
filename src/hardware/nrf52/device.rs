@@ -1,4 +1,5 @@
 use crate::hardware::api::{EguDriver, RadioDriver};
+use crate::hardware::context::SlotContext;
 use crate::hardware::{
     clock::Nrf52Clock,
     egu::{Nrf52Egu, Nrf52EguInstance},
@@ -16,13 +17,6 @@ use embassy_nrf::{
     rtc::Instance as RtcInstance,
     timer::Instance as TimerInstance,
 };
-
-#[derive(Default)]
-pub(crate) struct SlotContext {
-    pub refslot: u32,
-    pub slot_ticks: u32,
-    pub pipes: usize,
-}
 
 /// Hardware resources with a validated interrupt binding to handler `H`.
 pub struct DeviceContext<H> {
@@ -52,9 +46,10 @@ impl<H> DeviceContext<H> {
         G: Group,
         H: Handler<E::Interrupt>,
     {
-        // we set refslot random here.
-        let mut context = SlotContext::default();
-        context.refslot = seed;
+        let context = SlotContext {
+            refslot: seed,
+            ..SlotContext::default()
+        };
 
         #[cfg(feature = "defmt")]
         defmt::debug!("seed: {}", seed);
@@ -67,11 +62,11 @@ impl<H> DeviceContext<H> {
         radio.init();
 
         Self {
-            radio: radio,
+            radio,
             clock: Nrf52Clock::new(rtc, timer),
             ppi: Nrf52Ppi::new(channels, group.into()),
-            egu: egu,
-            context: context,
+            egu,
+            context,
             _handler: PhantomData,
         }
     }

@@ -8,20 +8,18 @@ use embassy_nrf::{
 
 use embassy_nrf::interrupt::typelevel::Interrupt as _;
 
-#[allow(dead_code)]
 pub(crate) struct Nrf52Egu {
-    egu: EmbassyEgu<'static>,
+    _egu: EmbassyEgu<'static>,
     regs: pac::egu::Egu,
     irq: interrupt::Interrupt,
 }
 
-#[allow(dead_code)]
 impl Nrf52Egu {
     pub fn new<E: Nrf52EguInstance>(egu: Peri<'static, E>) -> Self {
         let regs = <E as Nrf52EguInstance>::regs();
 
         Self {
-            egu: EmbassyEgu::new(egu),
+            _egu: EmbassyEgu::new(egu),
             irq: E::Interrupt::IRQ,
             regs,
         }
@@ -97,19 +95,6 @@ impl EguDriver for Nrf52Egu {
         regs.events_triggered(trigger as usize).read() != 0
     }
 
-    fn is_enabled_regs(regs: &pac::egu::Egu, trigger: Trigger) -> bool {
-        regs.intenset().read().triggered(trigger as usize)
-    }
-
-    fn get_enabled_regs(regs: &pac::egu::Egu) -> Option<Trigger> {
-        let flags = regs.intenset().read().0;
-        Trigger::from_index(flags.trailing_zeros() as usize)
-    }
-
-    fn enable_interrupt(&mut self, trigger: Trigger) {
-        Self::enable_interrupt_regs(&self.regs(), trigger);
-    }
-
     fn disable_interrupt(&mut self, trigger: Trigger) {
         Self::disable_interrupt_regs(&self.regs(), trigger);
     }
@@ -122,16 +107,8 @@ impl EguDriver for Nrf52Egu {
         Self::clear_triggered_regs(&self.regs(), trigger);
     }
 
-    fn trigger(&mut self, trigger: Trigger) {
-        Self::trigger_regs(&self.regs(), trigger);
-    }
-
     fn is_triggered(&self, trigger: Trigger) -> bool {
         Self::is_triggered_regs(&self.regs(), trigger)
-    }
-
-    fn is_enabled(&self, trigger: Trigger) -> bool {
-        Self::is_enabled_regs(&self.regs(), trigger)
     }
 
     fn get_enabled(&self) -> Option<Trigger> {

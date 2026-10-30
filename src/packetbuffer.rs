@@ -32,7 +32,6 @@ impl PacketBuffer {
         ))
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_len(&mut self, len: usize) {
         self.pdu0.set_length(len as u8);
     }
@@ -67,25 +66,16 @@ impl PacketBuffer {
         self.pdu0.set_length(end as u8);
     }
 
-    #[allow(dead_code)]
-    fn read(&self, dst: &mut [u8], start: usize, end: usize) -> Result<(), ()> {
-        dst.copy_from_slice(&self.data[start..end]);
-        Ok(())
-    }
-
     pub(crate) fn clear(&mut self) {
         self.pdu0.set_length(0);
         self.pdu1.set_packet_type(crate::pdu::PacketType::Start);
     }
 
-    // pub(crate) fn as_ptr(&self) -> *const u8 {
-    //     core::ptr::from_ref(self).cast()
-    // }
-
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         core::ptr::from_mut(self).cast()
     }
 
+    #[cfg(feature = "defmt")]
     pub(crate) fn data(&self) -> &[u8] {
         &self.data[0..self.len()]
     }

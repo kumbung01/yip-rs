@@ -1,6 +1,7 @@
 //! nRF54LM20 backend. Hardware support has not been ported yet.
 
 pub(crate) mod clock;
+#[cfg(feature = "defmt")]
 pub mod cyccnt;
 pub(crate) mod device;
 pub(crate) mod egu;

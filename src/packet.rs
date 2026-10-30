@@ -1,5 +1,4 @@
 use core::ops::{Deref, DerefMut};
-use embassy_sync::semaphore::WaitQueueFull;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
 use crate::config::*;
@@ -98,11 +97,6 @@ impl<const W: usize> PacketChannels<W> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn session_endpoints(&'static self) -> [YipSessionEndpoints; W] {
-        core::array::from_fn(|i| self.session_ep(i))
-    }
-
     pub fn session_ep(&'static self, i: usize) -> YipSessionEndpoints {
         YipSessionEndpoints {
             conn: ConnWaiter {
@@ -111,11 +105,6 @@ impl<const W: usize> PacketChannels<W> {
             rx: self.rx[i].receiver(),
             tx: self.tx[i].sender(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn link_endpoints(&'static self) -> [YipLinkEndpoints; W] {
-        core::array::from_fn(|i| self.link_ep(i))
     }
 
     pub fn link_ep(&'static self, n: usize) -> YipLinkEndpoints {
@@ -153,25 +142,8 @@ impl Packet {
         Ok(())
     }
 
-    pub(crate) fn append(&mut self, data: &[u8]) -> Result<(), ()> {
-        let start = self.len as usize;
-        let end = start.checked_add(data.len()).ok_or(())?;
-
-        let destination = self.data.get_mut(start..end).ok_or(())?;
-        let new_len = u8::try_from(end).map_err(|_| ())?;
-
-        destination.copy_from_slice(data);
-        self.len = new_len;
-
-        Ok(())
-    }
-
     pub fn as_slice(&self) -> &[u8] {
         &self.data[..self.len as usize]
-    }
-
-    pub(crate) fn remaining_capacity(&self) -> usize {
-        &self.data.len() - self.len as usize
     }
 }
 
@@ -203,7 +175,7 @@ where
 {
     pub(crate) const fn new(packet: ItemHandle<P>) -> Self {
         Self {
-            packet: packet,
+            packet,
             copied: 0,
             in_flight_len: 0,
         }
@@ -236,11 +208,6 @@ where
         total_len - self.copied
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn copy_from_slice(&mut self, slice: &[u8]) -> Result<(), ()> {
-        self.packet.set(slice)
-    }
-
     pub(crate) fn append_from_slice(&mut self, slice: &[u8]) -> Result<(), ()> {
         let end = self.copied.checked_add(slice.len()).ok_or(())?;
         if end > self.total_len() {
@@ -261,16 +228,13 @@ where
         self.packet.len as usize
     }
 
+    #[cfg(feature = "defmt")]
     pub(crate) fn copied(&self) -> usize {
         self.copied
     }
 
     pub(crate) fn remaining_len(&self) -> usize {
         self.packet.as_slice().len() - self.copied
-    }
-
-    pub(crate) fn remaining_capacity(&self) -> usize {
-        self.packet.remaining_capacity()
     }
 
     pub(crate) fn remain_before_tx(&self) -> usize {

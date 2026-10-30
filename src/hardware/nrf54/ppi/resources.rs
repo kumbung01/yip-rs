@@ -5,7 +5,7 @@ use embassy_nrf::{
     pac::{
         self,
         common::{RW, Reg},
-        dppic::{Dppic, SubscribeChg, regs::Chg},
+        dppic::{Dppic, SubscribeChg},
         shared::regs::{Publish, Subscribe},
     },
     peripherals,
@@ -89,13 +89,6 @@ impl<'d, D: Domain> Channel<'d, D> {
     pub fn new<C: ChannelInstance<Domain = D>>(_channel: Peri<'d, C>) -> Self {
         Self {
             number: C::NUMBER,
-            _owner: PhantomData,
-        }
-    }
-
-    pub unsafe fn from_num(ch: usize) -> Self {
-        Self {
-            number: ch,
             _owner: PhantomData,
         }
     }
@@ -209,10 +202,6 @@ impl<'d, D: Domain, const N: usize> Channels<'d, D, N> {
         D::regs()
             .chenclr()
             .write_value(pac::dppic::regs::Chen(self.mask));
-    }
-
-    pub fn domain(&self) -> Dppic {
-        D::regs()
     }
 
     pub fn channel(&self, index: usize) -> &Channel<'d, D> {

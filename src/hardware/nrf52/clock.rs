@@ -6,8 +6,8 @@ use embassy_nrf::{
     timer::{Instance as TimerInstance, Timer},
 };
 
+use crate::config::*;
 use crate::pdu::*;
-use crate::{config::*, packetbuffer::PacketBuffer};
 
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -16,8 +16,8 @@ pub(crate) struct Timestamp {
     timer: u32,
 }
 
-#[allow(dead_code)]
 impl ClockTimestamp for Timestamp {
+    #[cfg(feature = "defmt")]
     fn unscaled(&self) -> Timestamp {
         Timestamp {
             rtc: self.rtc,
@@ -32,7 +32,6 @@ pub(crate) struct Nrf52Clock {
     ts: Timestamp,
 }
 
-#[allow(dead_code)]
 impl Nrf52Clock {
     pub(crate) fn new<R, T>(rtc: Peri<'static, R>, timer: Peri<'static, T>) -> Self
     where
@@ -57,12 +56,6 @@ impl Nrf52Clock {
 }
 
 // central impl
-#[allow(dead_code)]
-impl Nrf52Clock {
-    pub(crate) fn get_now_central(&self) -> u32 {
-        self.timer.cc(3).capture()
-    }
-}
 
 // peripheral impl
 
@@ -75,12 +68,14 @@ fn unscale_timer(cc: u32) -> u32 {
 impl ClockDriver for Nrf52Clock {
     type Timestamp = Timestamp;
     type Timing = Timing;
+    #[cfg(feature = "defmt")]
     type PeripheralInstant = u32;
 
     fn get_start_ts(&self) -> Timestamp {
         self.ts
     }
 
+    #[cfg(feature = "defmt")]
     fn get_start_hw(&mut self) -> Timestamp {
         Timestamp {
             rtc: self.rtc.regs().cc(0).read().0,
@@ -140,10 +135,6 @@ impl ClockDriver for Nrf52Clock {
         timeout_ticks
     }
 
-    fn get_start_central(&self) -> Timestamp {
-        self.ts
-    }
-
     fn start_peripheral(&mut self) {
         debug!("start peripheral clock");
 
@@ -162,6 +153,7 @@ impl ClockDriver for Nrf52Clock {
         self.timer.clear();
     }
 
+    #[cfg(feature = "defmt")]
     fn get_now_peripheral(&self) -> u32 {
         self.rtc.read()
     }

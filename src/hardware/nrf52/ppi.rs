@@ -30,7 +30,6 @@ pub(crate) struct Nrf52Ppi {
     group: PpiGroup<'static>,
 }
 
-#[allow(dead_code)]
 impl Nrf52Ppi {
     pub(crate) fn new(
         channels: [PpiChannel<'static>; YIP_PPI_CHANNEL_COUNT],
@@ -53,12 +52,6 @@ impl Nrf52Ppi {
     fn include_group(&mut self, channel: usize) {
         pac::PPI.chg(self.group.number()).modify(|w| {
             w.set_ch(self.channels[channel].number(), true);
-        })
-    }
-
-    fn remove(&mut self, channel: usize) {
-        pac::PPI.chg(self.group.number()).write(|w| {
-            w.set_ch(self.channels[channel].number(), false);
         })
     }
 

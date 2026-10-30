@@ -10,7 +10,6 @@ use embassy_nrf::{
     pac::{
         self,
         radio::{
-            Radio as RadioReg,
             regs::Datawhiteiv,
             vals::{self, Mode, Ru, S1incl, Txpower},
         },
@@ -21,23 +20,12 @@ use embassy_nrf::{
 pub(crate) use crate::hardware::api::radio::RadioEvents;
 
 pub(crate) struct Nrf52Radio {
-    pub channel: u8,
-
-    #[allow(dead_code)]
-    radio: Peri<'static, peripherals::RADIO>,
+    _radio: Peri<'static, peripherals::RADIO>,
 }
 
-#[allow(dead_code)]
 impl Nrf52Radio {
-    pub fn regs(&mut self) -> RadioReg {
-        pac::RADIO
-    }
-
     pub fn new(radio: Peri<'static, peripherals::RADIO>) -> Self {
-        Self {
-            radio: radio,
-            channel: 0,
-        }
+        Self { _radio: radio }
     }
 
     fn set_radio_rampup_mode(&mut self) {
@@ -176,7 +164,6 @@ impl RadioDriver for Nrf52Radio {
     }
 
     fn set_channel(&mut self, channel: u8) {
-        self.channel = channel;
         pac::RADIO.frequency().write(|w| w.set_frequency(channel));
         self.set_whiten_seed(channel);
     }
@@ -208,28 +195,14 @@ impl RadioDriver for Nrf52Radio {
         events
     }
 
-    fn irq_set_disabled(&mut self, set: bool) {
-        pac::RADIO.intenset().write(|w| w.set_disabled(set));
-    }
-
-    fn irq_set_crcok(&mut self, set: bool) {
-        pac::RADIO.intenset().write(|w| w.set_crcok(set));
-    }
-
     fn get_rssi_sample(&mut self) -> u8 {
         pac::RADIO.rssisample().read().rssisample()
     }
 
-    fn get_rxcrc(&mut self) -> u32 {
-        pac::RADIO.rxcrc().read().rxcrc()
-    }
-
-    #[allow(dead_code)]
     fn set_tx_power(&mut self, tx_power: Txpower) {
         pac::RADIO.txpower().write(|w| w.set_txpower(tx_power));
     }
 
-    #[allow(dead_code)]
     fn disable(&mut self) {
         pac::RADIO.tasks_disable().write_value(1);
         while pac::RADIO.events_disabled().read() == 0 {}
