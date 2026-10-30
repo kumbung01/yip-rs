@@ -1,5 +1,6 @@
+use crate::hardware::api::{ClockDriver, EguDriver, PpiDriver, RadioDriver};
 use core::cell::RefCell;
-use embassy_nrf::interrupt::{self};
+use embassy_nrf::interrupt::{self, InterruptExt};
 use embassy_nrf::pac;
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
@@ -11,7 +12,7 @@ use crate::pdu::PacketKind;
 use crate::pdu::PacketType::{self, *};
 
 use crate::config::*;
-use crate::hardware::device::YipDevice;
+use crate::hardware::device::DeviceContext;
 use crate::hardware::egu::Trigger;
 use crate::hardware::impl_yip_egu_handlers;
 use crate::hop::get_channel;
@@ -22,6 +23,7 @@ use crate::link::{
 use crate::packet::CurrentPacket;
 use crate::packet::PacketChannels;
 use crate::role::private::*;
+use crate::session::YipSession;
 use crate::signal::RssiState;
 
 struct Alive(u32);
@@ -60,6 +62,25 @@ impl Slot {
     }
 }
 
+pub fn init<const W: usize>(device: DeviceContext<YipInterruptHandler>) -> [YipSession; W] {
+    crate::hardware::cyccnt::init();
+
+    let irq = device.egu.irq();
+
+    IRQ_STACK.lock(|cell| {
+        *cell.borrow_mut() = Some(YipCentral::new(device, W));
+    });
+
+    unsafe {
+        // SAFETY: 생성자의 Binding으로 벡터를 검증했고,
+        // stack 초기화와 ISR 등록이 완료됨.
+        irq.enable();
+    }
+
+    let eps = YipCentral::session_endpoints();
+    eps.map(|ep| YipSession::new(ep))
+}
+
 pub fn start() {
     IRQ_STACK.lock(|cell| {
         cell.borrow_mut()
@@ -82,7 +103,7 @@ pub struct YipCentral {
     state: CentralState,
     turn: usize,
     slots: [Slot; YIP_MAX_LINK_COUNT],
-    device: YipDevice<YipInterruptHandler>,
+    device: DeviceContext<YipInterruptHandler>,
     rxbuf: PacketBuffer,
 }
 
@@ -116,7 +137,7 @@ impl YipCentral {
     }
 
     pub(crate) fn stop(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,
@@ -138,7 +159,7 @@ impl YipCentral {
     }
 
     pub fn setup(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             clock,
             ppi,
             egu,
@@ -169,7 +190,7 @@ impl YipCentral {
 }
 
 impl YipCentral {
-    pub(crate) fn new(device: YipDevice<YipInterruptHandler>, pipes: usize) -> Self {
+    pub(crate) fn new(device: DeviceContext<YipInterruptHandler>, pipes: usize) -> Self {
         assert!(pipes <= YIP_MAX_LINK_COUNT);
 
         let mut central = Self {
@@ -193,7 +214,7 @@ impl YipCentral {
 
     fn prepare_tx(&mut self) {
         use crate::hardware::cyccnt;
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,
@@ -332,7 +353,7 @@ impl YipCentral {
     }
 
     fn timeslot_end(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             context: ctx,
             ppi,

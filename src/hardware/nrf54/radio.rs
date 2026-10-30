@@ -1,3 +1,5 @@
+use crate::hardware::api::RadioDriver;
+
 use crate::config::*;
 
 use crate::pdu::{PduByte0, PduByte1};
@@ -15,22 +17,16 @@ use embassy_nrf::{
     peripherals,
 };
 
-#[derive(Clone, Copy, Default)]
-pub(crate) struct RadioEvents {
-    pub crc_ok: bool,
-    pub disabled: bool,
-    pub txready: bool,
-    pub rxready: bool,
-}
+pub(crate) use crate::hardware::api::radio::RadioEvents;
 
-pub(crate) struct RadioDriver {
+pub(crate) struct Nrf54Radio {
     pub channel: u8,
 
     #[allow(dead_code)]
     radio: Peri<'static, peripherals::RADIO>,
 }
 
-impl RadioDriver {
+impl Nrf54Radio {
     pub fn regs(&mut self) -> RadioReg {
         pac::RADIO
     }
@@ -40,18 +36,6 @@ impl RadioDriver {
             radio: radio,
             channel: 0,
         }
-    }
-
-    pub(crate) fn init(&mut self) {
-        self.set_radio_frequency();
-        self.configure_crc();
-        self.set_base_addr();
-        self.configure_payload_format();
-        self.set_short();
-        self.set_radio_rampup_mode();
-
-        #[cfg(feature = "defmt")]
-        defmt::debug!("radio setup complete");
     }
 
     fn set_radio_rampup_mode(&mut self) {
@@ -131,88 +115,10 @@ impl RadioDriver {
         });
     }
 
-    pub unsafe fn set_packetptr(&mut self, packet: *mut u8) {
-        pac::RADIO.packetptr().write_value(packet as usize as u32);
-    }
-
-    pub fn set_txaddress(&mut self, pipe: u8) {
-        pac::RADIO.txaddress().write(|w| w.set_txaddress(pipe));
-    }
-
-    pub fn set_rxaddress(&mut self, pipe: u8) {
-        pac::RADIO
-            .rxaddresses()
-            .write_value(Rxaddresses(1u32 << pipe));
-    }
-
-    pub fn set_channel(&mut self, channel: u8) {
-        self.channel = channel;
-        pac::RADIO.frequency().write(|w| w.set_frequency(channel));
-
-        self.set_whiten_seed(channel);
-    }
-
     fn set_whiten_seed(&mut self, channel: u8) {
         pac::RADIO.datawhite().modify(|w| {
             w.set_iv((channel as u16 & 0x3F) | 0x40);
         });
-    }
-
-    pub(crate) fn take_interrupt_events(&mut self) -> RadioEvents {
-        let radio = embassy_nrf::pac::RADIO;
-        let mut events = RadioEvents::default();
-
-        if radio.events_crcok().read() != 0 {
-            radio.events_crcok().write_value(0);
-            events.crc_ok = true;
-        }
-
-        if radio.events_disabled().read() != 0 {
-            radio.events_disabled().write_value(0);
-            events.disabled = true;
-        }
-
-        if radio.events_txready().read() != 0 {
-            radio.events_txready().write_value(0);
-            events.txready = true;
-        }
-
-        if radio.events_rxready().read() != 0 {
-            radio.events_rxready().write_value(0);
-            events.rxready = true;
-        }
-
-        events
-    }
-
-    #[allow(dead_code)]
-    pub fn irq_set_disabled(&mut self, set: bool) {
-        pac::RADIO.intenset0(0).write(|w| w.set_disabled(set));
-    }
-
-    #[allow(dead_code)]
-    pub fn irq_set_crcok(&mut self, set: bool) {
-        pac::RADIO.intenset0(0).write(|w| w.set_crcok(set));
-    }
-
-    pub fn get_rssi_sample(&mut self) -> u8 {
-        pac::RADIO.rssisample().read().rssisample()
-    }
-
-    pub fn get_rxcrc(&mut self) -> u32 {
-        pac::RADIO.rxcrc().read().rxcrc()
-    }
-
-    #[allow(dead_code)]
-    pub fn set_tx_power(&mut self, power: Txpower) {
-        pac::RADIO.txpower().write(|w| w.set_txpower(power));
-    }
-
-    #[allow(dead_code)]
-    pub fn disable(&mut self) {
-        pac::RADIO.tasks_disable().write_value(1);
-        while pac::RADIO.events_disabled().read() == 0 {}
-        pac::RADIO.events_disabled().write_value(0);
     }
 }
 
@@ -253,3 +159,95 @@ pub(crate) const TX_POWER: &[Txpower] = &[
     Txpower::Pos7dBm,
     Txpower::Pos8dBm,
 ];
+
+impl RadioDriver for Nrf54Radio {
+    fn init(&mut self) {
+        self.set_radio_frequency();
+        self.configure_crc();
+        self.set_base_addr();
+        self.configure_payload_format();
+        self.set_short();
+        self.set_radio_rampup_mode();
+
+        #[cfg(feature = "defmt")]
+        defmt::debug!("radio setup complete");
+    }
+
+    unsafe fn set_packetptr(&mut self, packet: *mut u8) {
+        pac::RADIO.packetptr().write_value(packet as usize as u32);
+    }
+
+    fn set_txaddress(&mut self, pipe: u8) {
+        pac::RADIO.txaddress().write(|w| w.set_txaddress(pipe));
+    }
+
+    fn set_rxaddress(&mut self, pipe: u8) {
+        pac::RADIO
+            .rxaddresses()
+            .write_value(Rxaddresses(1u32 << pipe));
+    }
+
+    fn set_channel(&mut self, channel: u8) {
+        self.channel = channel;
+        pac::RADIO.frequency().write(|w| w.set_frequency(channel));
+
+        self.set_whiten_seed(channel);
+    }
+
+    fn take_interrupt_events(&mut self) -> RadioEvents {
+        let radio = embassy_nrf::pac::RADIO;
+        let mut events = RadioEvents::default();
+
+        if radio.events_crcok().read() != 0 {
+            radio.events_crcok().write_value(0);
+            events.crc_ok = true;
+        }
+
+        if radio.events_disabled().read() != 0 {
+            radio.events_disabled().write_value(0);
+            events.disabled = true;
+        }
+
+        if radio.events_txready().read() != 0 {
+            radio.events_txready().write_value(0);
+            events.txready = true;
+        }
+
+        if radio.events_rxready().read() != 0 {
+            radio.events_rxready().write_value(0);
+            events.rxready = true;
+        }
+
+        events
+    }
+
+    #[allow(dead_code)]
+    fn irq_set_disabled(&mut self, set: bool) {
+        pac::RADIO.intenset0(0).write(|w| w.set_disabled(set));
+    }
+
+    #[allow(dead_code)]
+    fn irq_set_crcok(&mut self, set: bool) {
+        pac::RADIO.intenset0(0).write(|w| w.set_crcok(set));
+    }
+
+    fn get_rssi_sample(&mut self) -> u8 {
+        pac::RADIO.rssisample().read().rssisample()
+    }
+
+    fn get_rxcrc(&mut self) -> u32 {
+        pac::RADIO.rxcrc().read().rxcrc()
+    }
+
+    #[allow(dead_code)]
+    fn set_tx_power(&mut self, power: Txpower) {
+        pac::RADIO.txpower().write(|w| w.set_txpower(power));
+    }
+
+    #[allow(dead_code)]
+    fn disable(&mut self) {
+        pac::RADIO.tasks_disable().write_value(1);
+        while pac::RADIO.events_disabled().read() == 0 {}
+        pac::RADIO.events_disabled().write_value(0);
+    }
+}

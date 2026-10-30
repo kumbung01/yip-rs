@@ -1,3 +1,5 @@
+use crate::hardware::api::{EguDriver, PpiDriver};
+
 use embassy_nrf::{
     Peri,
     pac::{
@@ -8,8 +10,8 @@ use embassy_nrf::{
     ppi::{AnyConfigurableChannel, AnyGroup, Channel, Group},
 };
 
-use crate::hardware::clock::ClockDriver;
-use crate::hardware::egu::{EguDriver, Trigger};
+use crate::hardware::clock::Nrf52Clock;
+use crate::hardware::egu::{Nrf52Egu, Trigger};
 
 pub(crate) const YIP_PPI_CHANNEL_COUNT: usize = 8;
 pub(crate) type PpiChannel<'d> = Peri<'d, AnyConfigurableChannel>;
@@ -22,14 +24,14 @@ macro_rules! ppi_channels {
     };
 }
 
-pub(crate) struct PpiDriver {
+pub(crate) struct Nrf52Ppi {
     channels: [PpiChannel<'static>; YIP_PPI_CHANNEL_COUNT],
     mask: Chen,
     group: PpiGroup<'static>,
 }
 
 #[allow(dead_code)]
-impl PpiDriver {
+impl Nrf52Ppi {
     pub(crate) fn new(
         channels: [PpiChannel<'static>; YIP_PPI_CHANNEL_COUNT],
         group: PpiGroup<'static>,
@@ -94,7 +96,22 @@ impl PpiDriver {
         }
     }
 
-    pub(crate) fn clear(&mut self) {
+    fn enable_channels(&self, channels: u32) {
+        pac::PPI.chenset().write_value(Chen(channels));
+    }
+}
+
+impl Drop for Nrf52Ppi {
+    fn drop(&mut self) {
+        self.clear_all();
+    }
+}
+
+impl PpiDriver for Nrf52Ppi {
+    type Clock = Nrf52Clock;
+    type Egu = Nrf52Egu;
+
+    fn clear(&mut self) {
         let ppi = embassy_nrf::pac::PPI;
 
         // 우선 채널을 모두 끈다.
@@ -104,7 +121,15 @@ impl PpiDriver {
         ppi.chg(self.group.number()).write(|_| ());
     }
 
-    pub(crate) fn configure_central(&mut self, clock: &mut ClockDriver, _egu: &mut EguDriver) {
+    fn enable(&mut self) {
+        pac::PPI.chenset().write_value(self.mask);
+    }
+
+    fn disable(&mut self) {
+        pac::PPI.chenclr().write_value(self.mask);
+    }
+
+    fn configure_central(&mut self, clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
         let ppi = pac::PPI;
         let radio = pac::RADIO;
         let timer = clock.timer.regs();
@@ -162,7 +187,7 @@ impl PpiDriver {
         self.include_group(5);
     }
 
-    pub(crate) fn configure_sync(&mut self, _clock: &mut ClockDriver, _egu: &mut EguDriver) {
+    fn configure_sync(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
         let radio = pac::RADIO;
         let timer = _clock.timer.regs();
         let rtc = _clock.rtc.regs();
@@ -193,11 +218,7 @@ impl PpiDriver {
         self.enable_channels(channels);
     }
 
-    pub(crate) fn configure_peripheral_prepare_rx(
-        &mut self,
-        _clock: &mut ClockDriver,
-        _egu: &mut EguDriver,
-    ) {
+    fn configure_peripheral_prepare_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
         let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
@@ -213,11 +234,7 @@ impl PpiDriver {
         self.enable_channels(channels);
     }
 
-    pub(crate) fn configure_peripheral_next_rx(
-        &mut self,
-        _clock: &mut ClockDriver,
-        _egu: &mut EguDriver,
-    ) {
+    fn configure_peripheral_next_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
         let ppi = pac::PPI;
         let radio = pac::RADIO;
         let timer = _clock.timer.regs();
@@ -289,7 +306,7 @@ impl PpiDriver {
         self.enable_channels(channels);
     }
 
-    pub(crate) fn configure_peripheral_tx_ack(&mut self, _egu: &mut EguDriver) {
+    fn configure_peripheral_tx_ack(&mut self, _egu: &mut Nrf52Egu) {
         let radio = pac::RADIO;
         let egu = _egu.regs();
 
@@ -303,23 +320,5 @@ impl PpiDriver {
         );
 
         self.enable_channels(channels);
-    }
-
-    fn enable_channels(&self, channels: u32) {
-        pac::PPI.chenset().write_value(Chen(channels));
-    }
-
-    pub(crate) fn enable(&mut self) {
-        pac::PPI.chenset().write_value(self.mask);
-    }
-
-    pub(crate) fn disable(&mut self) {
-        pac::PPI.chenclr().write_value(self.mask);
-    }
-}
-
-impl Drop for PpiDriver {
-    fn drop(&mut self) {
-        self.clear_all();
     }
 }

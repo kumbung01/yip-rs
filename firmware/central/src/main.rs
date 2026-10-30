@@ -8,8 +8,8 @@ use embassy_nrf::config::{Config, HfclkSource, LfclkSource};
 use embassy_nrf::gpio::{Input, Pull};
 
 use embassy_sync::channel::Channel;
+use yip::DeviceContext;
 use yip::YipSession;
-use yip::{YipDevice, init_central};
 
 use yip::ppi_channels;
 use yip::{YipReader, YipWriter};
@@ -35,7 +35,7 @@ async fn main(spawner: Spawner) {
         }
     );
 
-    let device = YipDevice::new(
+    let device = DeviceContext::new(
         p.RADIO,
         p.TIMER10,
         p.GRTC_CH0,
@@ -47,7 +47,7 @@ async fn main(spawner: Spawner) {
         seed,
     );
 
-    let sessions = init_central::<2>(device);
+    let sessions = yip::central::init::<2>(device);
 
     let b1 = Input::new(p.P1_26, Pull::Up);
     let b2 = Input::new(p.P1_09, Pull::Up);

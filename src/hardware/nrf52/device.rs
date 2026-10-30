@@ -1,8 +1,9 @@
+use crate::hardware::api::{EguDriver, RadioDriver};
 use crate::hardware::{
-    clock::ClockDriver,
-    egu::{EguDriver, YipEguInstance},
-    ppi::{PpiChannel, PpiDriver, YIP_PPI_CHANNEL_COUNT},
-    radio::YipRadio,
+    clock::Nrf52Clock,
+    egu::{Nrf52Egu, Nrf52EguInstance},
+    ppi::{Nrf52Ppi, PpiChannel, YIP_PPI_CHANNEL_COUNT},
+    radio::Nrf52Radio,
 };
 use crate::register_egu;
 
@@ -17,23 +18,23 @@ use embassy_nrf::{
 };
 
 #[derive(Default)]
-pub(crate) struct DeviceContext {
+pub(crate) struct SlotContext {
     pub refslot: u32,
     pub slot_ticks: u32,
     pub pipes: usize,
 }
 
 /// Hardware resources with a validated interrupt binding to handler `H`.
-pub struct YipDevice<H> {
-    pub(crate) radio: YipRadio,
-    pub(crate) clock: ClockDriver,
-    pub(crate) ppi: PpiDriver,
-    pub(crate) egu: EguDriver,
-    pub(crate) context: DeviceContext,
+pub struct DeviceContext<H> {
+    pub(crate) radio: Nrf52Radio,
+    pub(crate) clock: Nrf52Clock,
+    pub(crate) ppi: Nrf52Ppi,
+    pub(crate) egu: Nrf52Egu,
+    pub(crate) context: SlotContext,
     _handler: PhantomData<H>,
 }
 
-impl<H> YipDevice<H> {
+impl<H> DeviceContext<H> {
     pub fn new<T, R, E, G>(
         radio: Peri<'static, RADIO>,
         timer: Peri<'static, T>,
@@ -47,28 +48,28 @@ impl<H> YipDevice<H> {
     where
         T: TimerInstance,
         R: RtcInstance,
-        E: YipEguInstance,
+        E: Nrf52EguInstance,
         G: Group,
         H: Handler<E::Interrupt>,
     {
         // we set refslot random here.
-        let mut context = DeviceContext::default();
+        let mut context = SlotContext::default();
         context.refslot = seed;
 
         #[cfg(feature = "defmt")]
         defmt::debug!("seed: {}", seed);
 
         // we set egu register here for triggering from session.
-        let egu = EguDriver::new(egu);
+        let egu = Nrf52Egu::new(egu);
         register_egu(egu.regs());
 
-        let mut radio = YipRadio::new(radio);
+        let mut radio = Nrf52Radio::new(radio);
         radio.init();
 
         Self {
             radio: radio,
-            clock: ClockDriver::new(rtc, timer),
-            ppi: PpiDriver::new(channels, group.into()),
+            clock: Nrf52Clock::new(rtc, timer),
+            ppi: Nrf52Ppi::new(channels, group.into()),
             egu: egu,
             context: context,
             _handler: PhantomData,
@@ -76,7 +77,7 @@ impl<H> YipDevice<H> {
     }
 }
 
-impl<H> YipDevice<H> {
+impl<H> DeviceContext<H> {
     pub fn set_pipes(&mut self, pipes: usize) {
         assert!(pipes > 0, "pipes must be bigger than 0");
 

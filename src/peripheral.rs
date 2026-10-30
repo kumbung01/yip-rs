@@ -1,14 +1,17 @@
+use crate::hardware::api::{ClockDriver, ClockTimestamp, EguDriver, PpiDriver, RadioDriver};
 use core::cell::RefCell;
 use core::slice;
-use embassy_nrf::interrupt::{self};
+use embassy_nrf::interrupt::{self, InterruptExt};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
-use crate::config::*;
-use crate::hardware::clock::{ClockDriver, Timing};
+use crate::hardware::Clock;
+use crate::hardware::clock::Timing;
 use crate::hardware::cyccnt::{self, Cycle};
-use crate::hardware::device::YipDevice;
+use crate::hardware::device::DeviceContext;
 use crate::hardware::egu::Trigger::*;
 use crate::hardware::impl_yip_egu_handlers;
+use crate::session::YipSession;
+use crate::{config::*, enable_start};
 
 use crate::hop::get_channel;
 use crate::link::{
@@ -87,7 +90,7 @@ pub struct YipPeripheral {
     state: PeripheralState,
     slot: Slot,
     rxbuf: PacketBuffer,
-    device: YipDevice<YipInterruptHandler>,
+    device: DeviceContext<YipInterruptHandler>,
     id: u8,
 }
 
@@ -123,6 +126,30 @@ pub fn stop() {
     });
 }
 
+pub fn init(device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
+    crate::hardware::cyccnt::init();
+
+    let irq = device.egu.irq();
+
+    let mut role = YipPeripheral::new(device, id);
+    role.setup();
+
+    IRQ_STACK.lock(|cell| {
+        *cell.borrow_mut() = Some(role);
+    });
+
+    enable_start();
+
+    unsafe {
+        // SAFETY: 생성자의 Binding으로 벡터를 검증했고,
+        // stack 초기화와 ISR 등록이 완료됨.
+        irq.enable();
+    }
+
+    let [ep] = YipPeripheral::session_endpoints();
+    YipSession::new(ep)
+}
+
 impl YipPeripheral {
     pub(crate) fn start(&mut self) {
         self.setup();
@@ -131,7 +158,7 @@ impl YipPeripheral {
     }
 
     pub(crate) fn stop(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,
@@ -151,7 +178,7 @@ impl YipPeripheral {
     }
 
     pub(crate) fn setup(&mut self) {
-        let YipDevice { radio, .. } = &mut self.device;
+        let DeviceContext { radio, .. } = &mut self.device;
 
         radio.set_rxaddress(self.id);
         self.state = PeripheralState::Idle;
@@ -173,7 +200,7 @@ impl YipPeripheral {
 }
 
 impl YipPeripheral {
-    pub(crate) fn new(device: YipDevice<YipInterruptHandler>, id: u8) -> Self {
+    pub(crate) fn new(device: DeviceContext<YipInterruptHandler>, id: u8) -> Self {
         Self {
             timing: Timing::default(),
             state: PeripheralState::Idle,
@@ -200,7 +227,7 @@ impl YipPeripheral {
     }
 
     fn sync_start(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,
@@ -237,7 +264,7 @@ impl YipPeripheral {
     }
 
     fn sync_disabled(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,
@@ -312,7 +339,7 @@ impl YipPeripheral {
             .checked_sub(ADDR_DELAY_TICKS)
             .expect("ADDRESS capture must include address delay");
 
-        let Ok(new_hb) = ClockDriver::update_timestamp_by_sync(clock.get_start_ts(), sync) else {
+        let Ok(new_hb) = Clock::update_timestamp_by_sync(clock.get_start_ts(), sync) else {
             error!("hb set failed");
             self.sync_start();
             return;
@@ -343,7 +370,7 @@ impl YipPeripheral {
     }
 
     fn prepare_rx(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             clock, ppi, egu, ..
         } = &mut self.device;
 
@@ -356,7 +383,7 @@ impl YipPeripheral {
     }
 
     fn prepare_next_rx(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,
@@ -401,7 +428,7 @@ impl YipPeripheral {
     }
 
     fn disabled_rx(&mut self) {
-        let YipDevice {
+        let DeviceContext {
             radio,
             clock,
             ppi,

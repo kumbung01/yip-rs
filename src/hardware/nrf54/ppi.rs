@@ -1,3 +1,5 @@
+use crate::hardware::api::{EguDriver, PpiDriver};
+
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use embassy_nrf::{
@@ -11,8 +13,8 @@ use embassy_nrf::{
 };
 
 use crate::hardware::{
-    clock::ClockDriver,
-    egu::{EguDriver, Trigger},
+    clock::Nrf54Clock,
+    egu::{Nrf54Egu, Trigger},
 };
 
 #[path = "ppi/resources.rs"]
@@ -29,14 +31,14 @@ macro_rules! ppi_channels {
 // it uses EGU10, TIMER10 fixed for now
 // needs grtc cc
 
-pub(crate) struct PpiDriver {
+pub(crate) struct Nrf54Ppi {
     radio_channels: Channels<'static, Radio, 3>,
     peri_channels: Channels<'static, PeriDomain, 1>,
     peri_to_radio: Ppib<'static>,
     group: Group<'static, Radio>,
 }
 
-impl PpiDriver {
+impl Nrf54Ppi {
     pub(crate) fn new<S: BridgeChannel>(
         radio_channels: [Channel<'static, Radio>; 3],
         peri_channels: [Channel<'static, PeriDomain>; 1],
@@ -99,26 +101,38 @@ impl PpiDriver {
             .write(|w| w.set_en(false));
         self.group.clear();
     }
+}
 
-    pub(crate) fn clear(&mut self) {
+// central impl
+
+// peripheral impl
+
+impl Drop for Nrf54Ppi {
+    fn drop(&mut self) {
+        self.clear_all();
+    }
+}
+
+impl PpiDriver for Nrf54Ppi {
+    type Clock = Nrf54Clock;
+    type Egu = Nrf54Egu;
+
+    fn clear(&mut self) {
         self.disable();
         self.group.clear();
     }
 
-    pub(crate) fn enable(&mut self) {
+    fn enable(&mut self) {
         self.radio_channels.enable();
         self.peri_channels.enable();
     }
 
-    pub(crate) fn disable(&mut self) {
+    fn disable(&mut self) {
         self.radio_channels.disable();
         self.peri_channels.disable();
     }
-}
 
-// central impl
-impl PpiDriver {
-    pub(crate) fn configure_central(&mut self, clock: &ClockDriver, egu: &EguDriver) {
+    fn configure_central(&mut self, clock: &mut Nrf54Clock, egu: &mut Nrf54Egu) {
         self.clear_all();
 
         let radio = pac::RADIO;
@@ -176,37 +190,20 @@ impl PpiDriver {
             ],
         );
     }
-}
 
-// peripheral impl
-impl PpiDriver {
-    pub(crate) fn configure_sync(&mut self, _clock: &mut ClockDriver, _egu: &mut EguDriver) {
+    fn configure_sync(&mut self, _clock: &mut Nrf54Clock, _egu: &mut Nrf54Egu) {
         todo!();
     }
 
-    pub(crate) fn configure_peripheral_prepare_rx(
-        &mut self,
-        _clock: &mut ClockDriver,
-        _egu: &mut EguDriver,
-    ) {
+    fn configure_peripheral_prepare_rx(&mut self, _clock: &mut Nrf54Clock, _egu: &mut Nrf54Egu) {
         todo!();
     }
 
-    pub(crate) fn configure_peripheral_next_rx(
-        &mut self,
-        _clock: &mut ClockDriver,
-        _egu: &mut EguDriver,
-    ) {
+    fn configure_peripheral_next_rx(&mut self, _clock: &mut Nrf54Clock, _egu: &mut Nrf54Egu) {
         todo!();
     }
 
-    pub(crate) fn configure_peripheral_tx_ack(&mut self, _egu: &mut EguDriver) {
+    fn configure_peripheral_tx_ack(&mut self, _egu: &mut Nrf54Egu) {
         todo!();
-    }
-}
-
-impl Drop for PpiDriver {
-    fn drop(&mut self) {
-        self.clear_all();
     }
 }

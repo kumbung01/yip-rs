@@ -1,3 +1,5 @@
+use crate::hardware::api::{ClockDriver, ClockTimestamp};
+
 use core::marker::PhantomData;
 use core::ops::Sub;
 use embassy_time::Instant;
@@ -66,8 +68,8 @@ pub(crate) struct Timestamp {
     pub(crate) us: u64,
 }
 
-impl Timestamp {
-    pub fn unscaled(&self) -> Timestamp {
+impl ClockTimestamp for Timestamp {
+    fn unscaled(&self) -> Timestamp {
         Timestamp { us: self.us }
     }
 }
@@ -78,7 +80,7 @@ pub(crate) struct SlotClock {
     pub(crate) timestamp: u64,
 }
 
-pub(crate) struct ClockDriver {
+pub(crate) struct Nrf54Clock {
     grtc: GrtcCc<'static>,
     pub(crate) timer: Timer<'static>,
     ts: Timestamp,
@@ -87,7 +89,7 @@ pub(crate) struct ClockDriver {
 
 pub(crate) struct SlotDiff(u32);
 
-impl ClockDriver {
+impl Nrf54Clock {
     pub fn new<G: GrtcChannel, T: TimerInstance>(
         grtc: Peri<'static, G>,
         timer: Peri<'static, T>,
@@ -107,42 +109,60 @@ impl ClockDriver {
             slot: 0,
         }
     }
-
-    pub(crate) fn get_start_ts(&self) -> Timestamp {
-        self.ts
-    }
-
-    pub(crate) fn get_start_hw(&mut self) -> Timestamp {
-        Timestamp {
-            us: Instant::now().as_micros(),
-        }
-    }
 }
 
 // hw specific impl
-impl ClockDriver {
+impl Nrf54Clock {
     pub(crate) fn grtc_num(&self) -> usize {
         self.grtc.number
     }
 }
 
 // central impl
-impl ClockDriver {
+impl Nrf54Clock {
     pub(crate) fn get_timeout(&self) -> u32 {
         self.timer.cc(0).read()
     }
 
-    pub(crate) fn start_central(&mut self) {
+    pub(crate) fn get_now_central(&self) -> Timestamp {
+        let us = Instant::now().as_micros();
+
+        Timestamp { us: us }
+    }
+}
+
+pub(crate) type Timing = crate::hardware::api::clock::Timing<Timestamp>;
+
+fn unscale_timer(cc: u32) -> u32 {
+    todo!();
+}
+
+impl ClockDriver for Nrf54Clock {
+    type Timestamp = Timestamp;
+    type Timing = Timing;
+    type PeripheralInstant = u64;
+
+    fn get_start_ts(&self) -> Timestamp {
+        self.ts
+    }
+
+    fn get_start_hw(&mut self) -> Timestamp {
+        Timestamp {
+            us: Instant::now().as_micros(),
+        }
+    }
+
+    fn start_central(&mut self) {
         // self.timer.cc(0).short_compare_stop();
         // self.timer.cc(0).short_compare_clear();
     }
 
-    pub(crate) fn stop_central(&mut self) {
+    fn stop_central(&mut self) {
         self.timer.stop();
         self.timer.clear();
     }
 
-    pub(crate) fn set_next_slot_central(&mut self) -> u32 {
+    fn set_next_slot_central(&mut self) -> u32 {
         let now_us = Instant::now().as_micros();
         let elapsed_us = (now_us - self.ts.us) as u32;
         let radio_margin_us = ISR_MARGIN_US;
@@ -159,7 +179,7 @@ impl ClockDriver {
         slot_diff
     }
 
-    pub(crate) fn set_timeout_central(&mut self, bytes: usize) -> u32 {
+    fn set_timeout_central(&mut self, bytes: usize) -> u32 {
         const HEADER_BITS: u32 = PduByte0::LENGTH_BIT_COUNT as u32 + PduByte1::S1_BITS as u32;
 
         const HEADER_TICKS: u32 = {
@@ -188,88 +208,43 @@ impl ClockDriver {
         timeout_ticks
     }
 
-    pub(crate) fn get_now_central(&self) -> Timestamp {
-        let us = Instant::now().as_micros();
-
-        Timestamp { us: us }
-    }
-
-    pub(crate) fn get_start_central(&self) -> Timestamp {
+    fn get_start_central(&self) -> Timestamp {
         self.ts
     }
-}
 
-#[derive(Default)]
-pub(crate) struct Timing {
-    pub hb: Timestamp,
-    pub drift_scaled: Option<i32>,
-    pub hb_loops: u32,
-    pub loop_ticks_scaled: u32,
-    pub slot_now: u32,
-
-    pub is_hb: bool,
-    pub check_next_slot: bool,
-}
-
-impl Timing {
-    fn set_drift(&mut self, drift: i32) {
-        let error_scaled = drift * TIMER_TICK_SCALED as i32;
-
-        if let Some(ds) = &mut self.drift_scaled {
-            *ds += error_scaled / 4;
-        } else {
-            self.drift_scaled = Some(error_scaled);
-        }
-    }
-
-    fn get_drift_scaled(&self) -> i32 {
-        self.drift_scaled.unwrap_or(0)
-    }
-
-    pub fn drift_reset(&mut self) {
-        self.drift_scaled = None;
-    }
-}
-
-// peripheral impl
-impl ClockDriver {
-    pub(crate) fn start_peripheral(&mut self) {
+    fn start_peripheral(&mut self) {
         todo!();
     }
 
-    pub(crate) fn stop_peripheral(&mut self) {
+    fn stop_peripheral(&mut self) {
         todo!();
     }
 
-    pub(crate) fn get_now_peripheral(&self) -> u64 {
+    fn get_now_peripheral(&self) -> u64 {
         todo!();
     }
 
-    pub(crate) fn set_next_sync(&mut self) -> (u32, u32) {
+    fn set_next_sync(&mut self) -> (u32, u32) {
         todo!();
     }
 
-    pub(crate) fn set_next_pre_slot(&mut self, tm: &Timing) {
+    fn set_next_pre_slot(&mut self, tm: &Timing) {
         todo!();
     }
 
-    pub(crate) fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
+    fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
         todo!();
     }
 
-    pub(crate) fn read_sync(&self) -> u32 {
+    fn read_sync(&self) -> u32 {
         todo!();
     }
 
-    pub(crate) fn update_sync(&self, tm: &mut Timing) -> UpdateResult {
+    fn update_sync(&self, tm: &mut Timing) -> UpdateResult {
         todo!();
     }
 
-    pub(crate) fn update_timestamp_by_sync(ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
+    fn update_timestamp_by_sync(ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
         todo!();
     }
-}
-
-fn unscale_timer(cc: u32) -> u32 {
-    todo!();
 }

@@ -7,11 +7,11 @@ use embassy_time::{Duration, Instant, Timer};
 use embassy_nrf::bind_interrupts;
 use embassy_nrf::gpio::{Input, Pull};
 use embassy_sync::channel::Channel;
+use yip::DeviceContext;
 use yip::YipSession;
-use yip::{YipDevice, init_peripheral};
 
-use yip::ppi_channels;
 use yip::YipWriter;
+use yip::ppi_channels;
 
 use embassy_executor::Spawner;
 
@@ -38,7 +38,7 @@ async fn main(spawner: Spawner) {
         }
     );
 
-    let device = YipDevice::new(
+    let device = DeviceContext::new(
         p.RADIO,
         p.TIMER2,
         p.RTC2,
@@ -51,7 +51,7 @@ async fn main(spawner: Spawner) {
         0,
     );
 
-    let session = init_peripheral(device, 0);
+    let session = yip::peripheral::init(device, 0);
 
     let b1 = Input::new(p.P0_11, Pull::Up);
     let b2 = Input::new(p.P0_12, Pull::Up);
