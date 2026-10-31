@@ -105,7 +105,13 @@ async fn process_message(rx: &mut YipReader, tx: &mut YipWriter, id: usize) {
                 let pressed = u32::from_le_bytes(bytes.try_into().unwrap());
 
                 let mut message = heapless::String::<64>::new();
-                if write!(message, "hello from nice_nano!! you pressed {}", pressed).is_ok() {
+                if write!(
+                    message,
+                    "hello {{{}}} from nice_nano!! you pressed {}",
+                    id, pressed
+                )
+                .is_ok()
+                {
                     let _ = tx.try_write(message.as_bytes());
                 }
             }

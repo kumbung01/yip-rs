@@ -17,7 +17,7 @@ use embassy_executor::Spawner;
 
 use yip::peripheral::YipInterruptHandler;
 const PERIPHERAL_ID: u8 = 0;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const SEND_INTERVAL: Duration = Duration::from_secs(3);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -67,69 +67,95 @@ async fn main(spawner: Spawner) {
 async fn session_task(session: YipSession) {
     defmt::info!("session {} start", PERIPHERAL_ID);
     let (rx, mut tx, conn) = session.split();
+    let mut stats = CommunicationStats::default();
+
+    let pressed = COUNTS.receive().await;
+    yip::peripheral::start();
+    let mut next_send = Instant::now() + SEND_INTERVAL;
+    let mut next_value = 1u32;
+    let mut connected = false;
+    let mut pending_button = Some(pressed);
 
     loop {
-        let pressed = COUNTS.receive().await;
-        yip::peripheral::start();
-        let mut deadline = Instant::now() + IDLE_TIMEOUT;
-        let mut connected = false;
-        let mut pending_button = Some(pressed);
+        let connection_changed = async {
+            if connected {
+                conn.wait_disconnected().await;
+            } else {
+                conn.wait_connected().await;
+            }
+        };
 
-        loop {
-            let connection_changed = async {
+        match select4(
+            COUNTS.receive(),
+            connection_changed,
+            rx.read(),
+            Timer::at(next_send),
+        )
+        .await
+        {
+            Either4::First(pressed) => {
                 if connected {
-                    conn.wait_disconnected().await;
+                    stats.send(&mut tx, pressed);
                 } else {
-                    conn.wait_connected().await;
+                    pending_button = Some(pressed);
                 }
-            };
-
-            match select4(
-                COUNTS.receive(),
-                connection_changed,
-                rx.read(),
-                Timer::at(deadline),
-            )
-            .await
-            {
-                Either4::First(pressed) => {
-                    deadline = Instant::now() + IDLE_TIMEOUT;
-                    if connected {
-                        send_button(&mut tx, pressed);
-                    } else {
-                        pending_button = Some(pressed);
+            }
+            Either4::Second(()) => {
+                connected = !connected;
+                if connected {
+                    defmt::info!("session connected");
+                    next_send = Instant::now() + SEND_INTERVAL;
+                    if let Some(pressed) = pending_button.take() {
+                        stats.send(&mut tx, pressed);
                     }
+                } else {
+                    defmt::info!("session disconnected");
                 }
-                Either4::Second(()) => {
-                    connected = !connected;
-                    if connected {
-                        defmt::info!("session connected");
-                        if let Some(pressed) = pending_button.take() {
-                            send_button(&mut tx, pressed);
-                        }
-                    } else {
-                        defmt::info!("session disconnected");
-                    }
-                }
-                Either4::Third(packet) => match core::str::from_utf8(packet.as_slice()) {
+            }
+            Either4::Third(packet) => {
+                stats.rx_packets += 1;
+                match core::str::from_utf8(packet.as_slice()) {
                     Ok(text) => defmt::info!("data: {}", text),
                     Err(_) => defmt::warn!("invalid UTF-8"),
-                },
-                Either4::Fourth(()) => {
-                    yip::peripheral::stop();
-                    defmt::info!("peripheral stopped");
-                    break;
+                }
+                defmt::info!(
+                    "stats: tx_attempts {} tx_queued {} tx_failed {} rx_packets {}",
+                    stats.tx_attempts,
+                    stats.tx_queued,
+                    stats.tx_attempts - stats.tx_queued,
+                    stats.rx_packets,
+                );
+            }
+            Either4::Fourth(()) => {
+                next_send = Instant::now() + SEND_INTERVAL;
+                if connected {
+                    stats.send(&mut tx, next_value);
+                    next_value = next_value % 4 + 1;
                 }
             }
         }
     }
 }
 
-fn send_button(tx: &mut YipWriter, pressed: u32) {
-    let mut arr = [0u8; 200];
-    let bytes = pressed.to_le_bytes();
-    arr[..bytes.len()].copy_from_slice(&bytes);
-    let _ = tx.try_write(&arr);
+#[derive(Default)]
+struct CommunicationStats {
+    tx_attempts: u64,
+    tx_queued: u64,
+    rx_packets: u64,
+}
+
+impl CommunicationStats {
+    fn send(&mut self, tx: &mut YipWriter, value: u32) {
+        let mut arr = [0u8; 200];
+        arr[..4].copy_from_slice(&value.to_le_bytes());
+        self.tx_attempts += 1;
+        if tx.try_write(&arr).is_ok() {
+            self.tx_queued += 1;
+            defmt::info!("send: attempt {} value {}", self.tx_attempts, value);
+        } else {
+            defmt::warn!("send failed: attempt {} value {}", self.tx_attempts, value);
+        }
+    }
 }
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
