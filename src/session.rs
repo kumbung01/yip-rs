@@ -1,6 +1,5 @@
 use crate::link::LinkState;
 use crate::packet::{ConnWaiter, PacketHandle, RxReceiver, TxSender, YipSessionEndpoints};
-use embassy_sync::semaphore::WaitQueueFull;
 
 pub struct YipSession {
     reader: YipReader,
