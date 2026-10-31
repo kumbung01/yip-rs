@@ -17,9 +17,13 @@ pub(crate) const YIP_MAX_LINK_COUNT: usize = 7;
 pub(crate) const YIP_POOL_SIZE: usize = 8;
 
 // Yip configs
-pub(crate) const YIP_SLOTSIZE_US: u64 = 500;
+pub(crate) const YIP_SLOTSIZE_US: u64 = if cfg!(feature = "350us-experimental") {
+    350
+} else {
+    500
+};
 pub(crate) const YIP_PACKET_SIZE: usize = 251;
-pub(crate) const YIP_SUB_PACKET_SIZE: usize = 20;
+pub(crate) const YIP_SUB_PACKET_SIZE: usize = 18;
 pub(crate) const CHANNELS: u32 = 39; // 39 channels
 // 250 us over the 500 ms heartbeat interval corresponds to 500 ppm.
 pub(crate) const DRIFT_LIMIT_US: u32 = 250;
@@ -30,9 +34,9 @@ pub(crate) const HEARTBEAT_DURATION_US: u32 = 500_000;
 pub(crate) const PERIPHEARL_SYNC_DURATION_US: u32 = 750_000;
 pub(crate) const PERIPHERAL_SYNC_TIMETOUT_US: u32 = 250_000;
 
-pub(crate) const TIMEOUT_MARGIN_US: u32 = 20;
+pub(crate) const TIMEOUT_MARGIN_US: u32 = 10;
 pub(crate) const TIMESLOT_MARGIN_US: u32 = 20;
-pub(crate) const RX_WINDOW_MARGIN_US: u32 = 20;
+pub(crate) const RX_WINDOW_MARGIN_US: u32 = 10;
 
 pub(crate) const TIMEOUT_LIMIT_US_CENTRAL: u32 = 1000_000;
 pub(crate) const TIMEOUT_LIMIT_US_PERIPHERAL: u32 = 500_000;
@@ -158,8 +162,12 @@ pub(crate) const TIMER_TICKS_PER_BYTE: u32 = {
 // pub(crate) const YIP_RADIO_RAMPUP_MODE: radiovals::Ru = radiovals::Ru::Default;
 pub(crate) const RADIO_RAMPUP_TIMER_TICKS: u32 = RADIO_RAMPUP_US * TIMER_TICKS_PER_US;
 
-pub(crate) const RADIO_ADDR_BALEN: u8 = RADIO_ADDR_BASE_0.len() as u8;
-pub(crate) const RADIO_ADDR_BYTES: u8 = RADIO_ADDR_BALEN + 1; // BASE_ADDR[4] + PREFIX[1]
+pub(crate) const RADIO_ADDR_BALEN: u8 = if cfg!(feature = "350us-experimental") {
+    3
+} else {
+    RADIO_ADDR_BASE_0.len() as u8
+};
+pub(crate) const RADIO_ADDR_BYTES: u8 = RADIO_ADDR_BALEN + 1; // BASE_ADDR[BALEN] + PREFIX[1]
 pub(crate) const RADIO_ADDR_BITS: u32 = RADIO_ADDR_BYTES as u32 * 8;
 
 pub(crate) const RADIO_PREAMBLE_BYTES: u8 = match RADIO_PREAMBLE_LEN_MODE {

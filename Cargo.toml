@@ -41,6 +41,10 @@ cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 [features]
 default = ["nrf52840"]
 
+# Experimental wire configuration: 350 us slots and a 3-byte base address.
+# Enable on both central and peripheral; default is 500 us / 4-byte base.
+350us-experimental = []
+
 nrf52840 = ["embassy-nrf/nrf52840"]
 nrf54lm20 = [
     "embassy-nrf/nrf54lm20-app-s",

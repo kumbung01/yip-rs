@@ -25,6 +25,19 @@ Radio behavior has not been verified on hardware.
 
 ## Build and run
 
+The default radio configuration uses 500 us slots and `BALEN=4` (a five-byte
+address including the prefix). Sub packets hold 18 bytes in both modes.
+To use experimental 350 us slots with `BALEN=3` (a four-byte address), enable
+the feature on both central and peripheral:
+
+```powershell
+cargo run --release --features yip/350us-experimental
+```
+
+For an application dependency, add `"350us-experimental"` to the `yip`
+dependency's `features` list. Without this feature, `cargo run --release`
+uses the default 500 us configuration.
+
 Run `probe-rs list` to find each probe's `VID:PID:SERIAL` identifier.
 
 Terminal 1, starting at the repository root:
