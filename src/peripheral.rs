@@ -497,8 +497,6 @@ impl YipPeripheral {
             return;
         };
 
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        let mut log_sync_after_ack = false;
         let rx_outcome: Option<(CurrentRx, &[u8])> = 'rx_retry: {
             if is_retransmit_payload {
                 break 'rx_retry None;
