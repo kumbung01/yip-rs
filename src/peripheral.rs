@@ -247,6 +247,7 @@ impl YipPeripheral {
     }
 
     fn sync_start(&mut self) {
+        let immediate = self.state == PeripheralState::Idle;
         let DeviceContext {
             radio,
             clock,
@@ -258,7 +259,7 @@ impl YipPeripheral {
 
         self.state = PeripheralState::Syncing;
 
-        let (slot_diff, _timeout) = clock.set_next_sync();
+        let (slot_diff, _timeout) = clock.set_next_sync(immediate);
 
         context.refslot += slot_diff;
 
@@ -356,6 +357,10 @@ impl YipPeripheral {
         let ep = CHANNELS.link_ep(0);
 
         self.slot.link.state = Connected(Normal);
+        #[cfg(feature = "defmt")]
+        defmt::info!("sync success");
+        #[cfg(feature = "log")]
+        log::info!("sync success");
         ep.conn.signal(self.slot.link.state);
 
         // self.prepare_rx();

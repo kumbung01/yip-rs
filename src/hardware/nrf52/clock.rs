@@ -152,12 +152,28 @@ impl ClockDriver for Nrf52Clock {
         self.timer.clear();
     }
 
-    fn set_next_sync(&mut self) -> (u32, u32) {
+    fn set_next_sync(&mut self, immediate: bool) -> (u32, u32) {
         // Every RTC-triggered window needs a fresh relative counter.
         self.timer.stop();
         self.timer.clear();
 
         let rtc_now = self.rtc.read();
+        if immediate {
+            // Arm the first scan after hardware setup headroom, not a scan period.
+            self.ts = Timestamp {
+                rtc: rtc_wrap(rtc_now.wrapping_add(RADIO_MARGIN_RTC_TICKS)),
+                timer: 0,
+            };
+            self.rtc
+                .set_compare(RtcCc::_0, self.ts.rtc)
+                .expect("rtc value must within 24bit");
+            self.timer.cc(0).write(1);
+            let timeout =
+                1 + us_to_timer_ticks(PERIPHEARL_SYNC_DURATION_US - PERIPHERAL_SYNC_TIMETOUT_US)
+                    as u32;
+            self.timer.cc(1).write(timeout);
+            return (0, timeout);
+        }
         let mut elapsed = rtc_elapsed(rtc_now, self.ts.rtc);
         if elapsed >= 65_536 {
             // start/stop can leave the old reference ahead of the stopped RTC.

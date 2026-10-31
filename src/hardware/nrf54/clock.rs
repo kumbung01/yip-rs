@@ -245,15 +245,21 @@ impl ClockDriver for Nrf54Clock {
         self.timer.clear();
     }
 
-    fn set_next_sync(&mut self) -> (u32, u32) {
-        let (at, steps) = schedule::next_sync(
-            Instant::now().as_micros(),
-            self.ts.us,
-            self.ratio
-                .hf_to_grtc(PERIPHEARL_SYNC_DURATION_US)
-                .expect("sync interval overflow"),
-            SCHEDULE_MARGIN_US,
-        );
+    fn set_next_sync(&mut self, immediate: bool) -> (u32, u32) {
+        let now = Instant::now().as_micros();
+        let (at, steps) = if immediate {
+            // Keep only the headroom needed to install the RX routes.
+            (now + SCHEDULE_MARGIN_US as u64, 0)
+        } else {
+            schedule::next_sync(
+                now,
+                self.ts.us,
+                self.ratio
+                    .hf_to_grtc(PERIPHEARL_SYNC_DURATION_US)
+                    .expect("sync interval overflow"),
+                SCHEDULE_MARGIN_US,
+            )
+        };
         self.timer.stop();
         self.timer.clear();
         self.timer.cc(2).write(0);

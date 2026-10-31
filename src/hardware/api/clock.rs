@@ -13,7 +13,7 @@ pub(crate) trait ClockDriver {
 
     fn start_peripheral(&mut self);
     fn stop_peripheral(&mut self);
-    fn set_next_sync(&mut self) -> (u32, u32);
+    fn set_next_sync(&mut self, immediate: bool) -> (u32, u32);
     fn set_next_pre_slot(&mut self, tm: &Self::Timing);
     fn set_next_slot_peripheral(&mut self, tm: &Self::Timing) -> Result<(u32, u32), ()>;
     fn read_sync(&self) -> u32;
