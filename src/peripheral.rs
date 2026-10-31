@@ -518,10 +518,6 @@ impl YipPeripheral {
                         match command {
                             ControlCommand::Sync => {
                                 // noop, for now
-                                #[cfg(any(feature = "defmt", feature = "log"))]
-                                {
-                                    log_sync_after_ack = true;
-                                }
                             }
                         }
 
@@ -674,11 +670,6 @@ impl YipPeripheral {
         egu.select_interrupt(TimeslotEnd);
 
         self.state = PeripheralState::TxAck;
-
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        if log_sync_after_ack {
-            error!("peripheral should not send this");
-        }
 
         // sync stuff
         if clock.update_sync(tm) == UpdateResult::Updated {
