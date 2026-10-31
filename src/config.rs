@@ -125,7 +125,17 @@ pub(crate) const RTC_TICK_HZ: u64 = {
     32_768 / (RTC_PRESCALE as u64 + 1)
 };
 
-pub(crate) const TIMER_TICK_HZ: u64 = TIMER_FREQUENCY.as_hz() as u64;
+pub(crate) const TIMER_TICK_HZ: u64 = {
+    // Frequency encodes log2 prescaling from 16 MHz. Negative values select
+    // the faster nRF54 clocks. This also works with released embassy-nrf 0.11,
+    // which does not yet expose Frequency::as_hz().
+    let prescaler = TIMER_FREQUENCY as u8 as i8;
+    if prescaler >= 0 {
+        16_000_000u64 >> prescaler as u32
+    } else {
+        16_000_000u64 << (-prescaler) as u32
+    }
+};
 pub(crate) const TIMER_TICKS_PER_US: u32 = {
     assert!(TIMER_TICK_HZ % 1_000_000 == 0);
 

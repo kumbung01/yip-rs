@@ -5,7 +5,7 @@ use embassy_time::Instant;
 
 use embassy_nrf::{
     Peri, PeripheralType, peripherals,
-    timer::{Instance as TimerInstance, Timer},
+    timer::Timer,
 };
 
 use crate::config::*;
@@ -37,8 +37,9 @@ macro_rules! impl_grtc_channels {
     };
 }
 
-// GRTC_CH11 is reserved by Embassy's time-driver-grtc feature.
-impl_grtc_channels!(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+// CC11 belongs to Embassy's time driver; some HAL releases also hide CH1.
+// Expose only channels available in both the released and local HAL.
+impl_grtc_channels!(0, 2, 3, 4, 5, 6, 7, 8, 9, 10);
 
 struct GrtcCc<'d> {
     number: usize,
@@ -98,14 +99,21 @@ pub(crate) struct Nrf54Clock {
 }
 
 impl Nrf54Clock {
-    pub fn new<G: GrtcChannel, T: TimerInstance>(
+    pub fn new<G: GrtcChannel>(
         grtc: Peri<'static, G>,
-        timer: Peri<'static, T>,
+        timer: Peri<'static, peripherals::TIMER10>,
     ) -> Self {
         let mut timer = Timer::new(timer);
 
-        timer.set_frequency(TIMER_FREQUENCY);
-        // timer.regs().prescaler().write(|w| w.set_prescaler(5));
+        // Work around the released HAL's 16 MHz assumption for TIMER10.
+        // TIMER10 runs from 32 MHz: PRESCALER=5 gives a 1 MHz counter.
+        const {
+            assert!(
+                TIMER_TICK_HZ == 1_000_000,
+                "update TIMER10 prescaler for the configured tick rate"
+            );
+        }
+        timer.regs().prescaler().write(|w| w.set_prescaler(5));
         timer.regs().bitmode().write(|w| {
             w.set_bitmode(TIMER_BITMODE);
         });
@@ -123,7 +131,6 @@ impl Nrf54Clock {
     pub(crate) fn grtc_num(&self) -> usize {
         self.grtc.number
     }
-
 }
 
 // central impl

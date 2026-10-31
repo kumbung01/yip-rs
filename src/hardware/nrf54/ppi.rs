@@ -11,7 +11,6 @@ use embassy_nrf::{
         common::{RW, Reg},
         shared,
     },
-    ppib::{BridgeChannel, Ppib},
 };
 
 #[path = "ppi/resources.rs"]

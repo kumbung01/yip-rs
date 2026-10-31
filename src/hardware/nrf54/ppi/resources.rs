@@ -9,13 +9,13 @@ use embassy_nrf::{
         shared::regs::{Publish, Subscribe},
     },
     peripherals,
-    ppib::Ppib,
 };
 
 mod sealed {
     pub trait Domain {}
     pub trait Channel {}
     pub trait Group {}
+    pub trait Bridge {}
 }
 
 pub trait Domain: sealed::Domain {
@@ -222,23 +222,60 @@ impl<'d, D: Domain, const N: usize> Channels<'d, D, N> {
     }
 }
 
-pub(crate) trait PpibExt {
-    fn subscribe_send(&self) -> Reg<Subscribe, RW>;
-    fn publish_receive(&self) -> Reg<Publish, RW>;
-    fn disable(&mut self);
+/// One owned half of the fixed PERI/RADIO bridge pair.
+pub trait BridgeChannel: sealed::Bridge + PeripheralType + 'static {
+    type Paired: BridgeChannel;
+    const NUMBER: usize;
+    fn regs() -> pac::ppib::Ppib;
 }
 
-impl PpibExt for Ppib<'_> {
-    fn subscribe_send(&self) -> Reg<Subscribe, RW> {
-        unsafe { Reg::from_ptr(self.task().subscribe_reg().cast()) }
+macro_rules! impl_bridge_pair {
+    ($($n:literal),+ $(,)?) => {
+        paste::paste! {
+            $(
+                impl sealed::Bridge for peripherals::[<PPIB21_CH $n>] {}
+                impl BridgeChannel for peripherals::[<PPIB21_CH $n>] {
+                    type Paired = peripherals::[<PPIB11_CH $n>];
+                    const NUMBER: usize = $n;
+                    fn regs() -> pac::ppib::Ppib { pac::PPIB21 }
+                }
+                impl sealed::Bridge for peripherals::[<PPIB11_CH $n>] {}
+                impl BridgeChannel for peripherals::[<PPIB11_CH $n>] {
+                    type Paired = peripherals::[<PPIB21_CH $n>];
+                    const NUMBER: usize = $n;
+                    fn regs() -> pac::ppib::Ppib { pac::PPIB11 }
+                }
+            )+
+        }
+    };
+}
+impl_bridge_pair!(0, 1, 2, 3, 4, 5, 6, 7);
+
+/// Keep exclusive ownership of both halves without depending on a HAL PPIB driver.
+pub(crate) struct Ppib<'d> {
+    send: Reg<Subscribe, RW>,
+    receive: Reg<Publish, RW>,
+    _owner: PhantomData<&'d mut ()>,
+}
+
+impl<'d> Ppib<'d> {
+    pub fn new<S: BridgeChannel>(_source: Peri<'d, S>, _sink: Peri<'d, S::Paired>) -> Self {
+        Self {
+            send: S::regs().subscribe_send(S::NUMBER),
+            receive: S::Paired::regs().publish_receive(S::Paired::NUMBER),
+            _owner: PhantomData,
+        }
     }
 
-    fn publish_receive(&self) -> Reg<Publish, RW> {
-        unsafe { Reg::from_ptr(self.event().publish_reg().cast()) }
+    pub fn subscribe_send(&self) -> Reg<Subscribe, RW> {
+        self.send
+    }
+    pub fn publish_receive(&self) -> Reg<Publish, RW> {
+        self.receive
     }
 
-    fn disable(&mut self) {
-        self.publish_receive().write(|w| w.set_en(false));
-        self.subscribe_send().write(|w| w.set_en(false));
+    pub fn disable(&mut self) {
+        self.receive.write(|w| w.set_en(false));
+        self.send.write(|w| w.set_en(false));
     }
 }

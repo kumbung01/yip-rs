@@ -8,8 +8,8 @@ use crate::hardware::ppi::{
 use crate::hardware::radio::Nrf54Radio;
 use crate::register_egu;
 
+use crate::hardware::ppi::BridgeChannel;
 use core::marker::PhantomData;
-use embassy_nrf::ppib::BridgeChannel;
 use embassy_nrf::{
     Peri,
     interrupt::typelevel::{Binding, EGU10, Handler},
