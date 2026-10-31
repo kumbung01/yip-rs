@@ -123,9 +123,6 @@ pub fn stop() {
 }
 
 pub fn init(device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
-    #[cfg(feature = "defmt")]
-    crate::hardware::ppi_timing::init();
-
     let irq = device.egu.irq();
 
     let mut role = YipPeripheral::new(device, id);
@@ -149,6 +146,14 @@ pub fn init(device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
 
 impl YipPeripheral {
     pub(crate) fn start(&mut self) {
+        #[cfg(feature = "nrf54lm20")]
+        {
+            embassy_nrf::pac::ICACHE
+                .enable()
+                .write(|w| w.set_enable(true));
+            cortex_m::asm::dsb();
+            cortex_m::asm::isb();
+        }
         self.setup();
         self.device.clock.start_peripheral();
         self.sync_start();
@@ -182,6 +187,16 @@ impl YipPeripheral {
         }
 
         self.state = PeripheralState::Idle;
+
+        #[cfg(feature = "nrf54lm20")]
+        {
+            cortex_m::asm::dsb();
+            embassy_nrf::pac::ICACHE
+                .enable()
+                .write(|w| w.set_enable(false));
+            cortex_m::asm::dsb();
+            cortex_m::asm::isb();
+        }
     }
 
     pub(crate) fn setup(&mut self) {
@@ -753,36 +768,36 @@ impl YipPeripheral {
             return;
         }
 
-        debug!(
-            "tx: type {} len {} body {:x}",
-            txbuf.pdu1.packet_type(),
-            txbuf.len(),
-            txbuf.data()
-        );
+        // debug!(
+        // "tx: type {} len {} body {:x}",
+        // txbuf.pdu1.packet_type(),
+        // txbuf.len(),
+        // txbuf.data()
+        // );
 
-        debug!(
-            "rx: type {} len {} body {:x}",
-            rx_packet_type,
-            slice.len(),
-            slice
-        );
+        // debug!(
+        // "rx: type {} len {} body {:x}",
+        // rx_packet_type,
+        // slice.len(),
+        // slice
+        // );
 
-        debug!(
-            "rx: current {{total {} copied {}}}",
-            rx_packet.total_len(),
-            rx_packet.copied()
-        );
+        // debug!(
+        // "rx: current {{total {} copied {}}}",
+        // rx_packet.total_len(),
+        // rx_packet.copied()
+        // );
 
-        debug!(
-            "rx: {{sn {} ne {}}} tx: {{sn {} ne {}}} rssi: {}, txpower: {}, next_slot: {}",
-            ur_sn,
-            my_nesn,
-            my_sn,
-            ur_nesn,
-            -(header.rssi as i8),
-            (self.slot.tx_power.get().to_bits() as i8),
-            tm.check_next_slot
-        );
+        // debug!(
+        // "rx: {{sn {} ne {}}} tx: {{sn {} ne {}}} rssi: {}, txpower: {}, next_slot: {}",
+        // ur_sn,
+        // my_nesn,
+        // my_sn,
+        // ur_nesn,
+        // -(header.rssi as i8),
+        // (self.slot.tx_power.get().to_bits() as i8),
+        // tm.check_next_slot
+        // );
 
         if rx_packet.is_ongoing() {
             link.current_rx = Some(rx_packet);

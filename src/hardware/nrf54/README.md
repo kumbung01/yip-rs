@@ -9,6 +9,14 @@ arithmetic in the nRF54 path. The quarter-step drift correction is quantized
 to whole microseconds; the early receive window is retained. The nRF52 backend
 keeps its RTC fixed-point representation internally.
 
+## Instruction cache lifecycle
+
+The nRF54 peripheral enables ICACHE at the beginning of `start()` and disables
+it after cleanup in `stop()`, with synchronization barriers. Firmware `main()`
+does not configure it separately. This is independent of defmt and the
+reduce-rram-latency feature. Resync leaves the cache enabled while the role runs.
+The cache is a CPU-wide resource; this lifecycle applies globally.
+
 ## RRAM latency feature
 
 Enable YIP's optional `reduce-rram-latency` feature together with `nrf54lm20`
@@ -94,15 +102,9 @@ required for timing and drift, especially sync acquisition and automatic TXEN.
 
 ## Validation
 
-With `defmt`, each PPI configuration function reports `PPI configure_...`:
-the cycles/ns spent clearing the old configuration, setting the new one, and
-the total cycle count. DWT is enabled without resetting its existing count;
-the scheduling TIMER and its capture channels are not used for profiling.
-The conversion reads the current 64/128 MHz CPU clock. Output occurs only after
-configuration (and ACK START arming) is complete, outside the measured interval.
-Captures and logging still add execution overhead, even though logging is not
-included in the reported duration. The measurements cover CPU execution and
-register writes, not end-to-end DPPI/PPIB propagation latency.
+Timing instrumentation has been removed. Packet-content, duplicate/empty-packet
+and application data/statistics logs are commented out; error and connection
+status logs remain available.
 
 From the repository root:
 

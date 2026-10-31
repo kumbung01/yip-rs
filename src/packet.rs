@@ -228,10 +228,10 @@ where
         self.packet.len as usize
     }
 
-    #[cfg(feature = "defmt")]
-    pub(crate) fn copied(&self) -> usize {
-        self.copied
-    }
+    // #[cfg(feature = "defmt")]
+    // pub(crate) fn copied(&self) -> usize {
+    // self.copied
+    // }
 
     pub(crate) fn remaining_len(&self) -> usize {
         self.packet.as_slice().len() - self.copied

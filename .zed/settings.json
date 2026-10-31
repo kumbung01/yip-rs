@@ -21,7 +21,7 @@
       "initialization_options": {
         // "linkedProjects": ["firmware/central/Cargo.toml"],
         // "linkedProjects": ["firmware/peripheral/Cargo.toml"],
-        "linkedProjects": ["firmware/central2/Cargo.toml"],
+        "linkedProjects": ["firmware/nrf54-peripheral/Cargo.toml"],
         "check": {
           "allTargets": false
         }

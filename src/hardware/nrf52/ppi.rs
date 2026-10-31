@@ -1,6 +1,4 @@
 use crate::hardware::api::{EguDriver, PpiDriver};
-#[cfg(feature = "defmt")]
-use crate::hardware::ppi_timing::PpiTiming;
 
 use embassy_nrf::{
     Peri,
@@ -143,11 +141,7 @@ impl PpiDriver for Nrf52Ppi {
     }
 
     fn configure_central(&mut self, clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear_all();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
         let ppi = pac::PPI;
         let radio = pac::RADIO;
         let timer = clock.timer.regs();
@@ -219,8 +213,6 @@ impl PpiDriver for Nrf52Ppi {
 
         // A PPI channel has one fork; use a spare channel for the second group.
         self.connect(6, timer.events_compare(0), completion_enable, None);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_central");
     }
 
     fn configure_sync(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
@@ -229,11 +221,7 @@ impl PpiDriver for Nrf52Ppi {
         let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
 
         // rtc.comp0 -> timer.en
         let mut channels = self.connect(0, rtc.events_compare(0), timer.tasks_start(), None);
@@ -256,8 +244,6 @@ impl PpiDriver for Nrf52Ppi {
         );
 
         self.enable_channels(channels);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_sync");
     }
 
     fn configure_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
@@ -270,11 +256,7 @@ impl PpiDriver for Nrf52Ppi {
         let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
 
         let channels = self.connect(
             0,
@@ -284,8 +266,6 @@ impl PpiDriver for Nrf52Ppi {
         );
 
         self.enable_channels(channels);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_peripheral_prepare_rx");
     }
 
     fn configure_peripheral_next_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
@@ -301,11 +281,7 @@ impl PpiDriver for Nrf52Ppi {
         let task_group_enable = ppi.tasks_chg(group_num).en();
         let task_group_disable = ppi.tasks_chg(group_num).dis();
 
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
 
         // RX starts automatically; ACK TX waits in TXIDLE until its buffer
         // and completion route have been installed.
@@ -371,19 +347,13 @@ impl PpiDriver for Nrf52Ppi {
         self.include_group(7);
 
         self.enable_channels(channels);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_peripheral_next_rx");
     }
 
     fn configure_peripheral_tx_ack(&mut self, _egu: &mut Nrf52Egu) {
         let radio = pac::RADIO;
         let egu = _egu.regs();
 
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
 
         let completion = self.connect(
             0,
@@ -419,7 +389,5 @@ impl PpiDriver for Nrf52Ppi {
         if radio.state().read().state() == pac::radio::vals::State::TxIdle {
             egu.tasks_trigger(ACK_START).write_value(1);
         }
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_peripheral_tx_ack");
     }
 }

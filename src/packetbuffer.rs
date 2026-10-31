@@ -75,10 +75,10 @@ impl PacketBuffer {
         core::ptr::from_mut(self).cast()
     }
 
-    #[cfg(feature = "defmt")]
-    pub(crate) fn data(&self) -> &[u8] {
-        &self.data[0..self.len()]
-    }
+    // #[cfg(feature = "defmt")]
+    // pub(crate) fn data(&self) -> &[u8] {
+    // &self.data[0..self.len()]
+    // }
 }
 
 pub(crate) struct BodyReader<'a> {

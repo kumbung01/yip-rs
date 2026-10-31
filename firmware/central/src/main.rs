@@ -126,10 +126,10 @@ async fn process_message(rx: &mut YipReader, tx: &mut YipWriter, id: usize) {
 
                 let _ = tx.try_write(arr.as_slice());
             }
-            Either::Second(packet) => {
+            Either::Second(_packet) => {
                 // let bt = u32::from_le_bytes(packet.as_slice()[..4].try_into().unwrap());
                 // defmt::info!("id {}: 버튼 {} 눌림", id, bt);
-                defmt::info!("id: {}, data: {}", id, packet.as_slice());
+                // defmt::info!("id: {}, data: {}", id, _packet.as_slice());
             }
         }
     }

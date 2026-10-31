@@ -55,9 +55,6 @@ impl Slot {
 }
 
 pub fn init<const W: usize>(device: DeviceContext<YipInterruptHandler>) -> [YipSession; W] {
-    #[cfg(feature = "defmt")]
-    crate::hardware::ppi_timing::init();
-
     let irq = device.egu.irq();
 
     IRQ_STACK.lock(|cell| {
@@ -369,20 +366,20 @@ impl YipCentral {
         'rx: {
             // Peer SN differs from the expected SN, so this is a duplicate.
             let rx_sn = buf.pdu1.sn();
-            #[cfg(feature = "defmt")]
-            let rx_nesn = buf.pdu1.nesn();
+            // #[cfg(feature = "defmt")]
+            // let rx_nesn = buf.pdu1.nesn();
             let duplicate_payload = rx_sn != link.nesn;
 
             if duplicate_payload {
-                debug!(
-                    "duplicate: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {} len {}",
-                    ctx.refslot,
-                    rx_sn,
-                    link.nesn,
-                    rx_nesn,
-                    link.sn,
-                    buf.len()
-                );
+                // debug!(
+                // "duplicate: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {} len {}",
+                // ctx.refslot,
+                // rx_sn,
+                // link.nesn,
+                // rx_nesn,
+                // link.sn,
+                // buf.len()
+                // );
                 break 'rx;
             }
 
@@ -422,10 +419,10 @@ impl YipCentral {
                     };
 
                     if total_len == 0 {
-                        debug!(
-                            "empty packet, skip: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {}",
-                            ctx.refslot, rx_sn, link.nesn, rx_nesn, link.sn
-                        );
+                        // debug!(
+                        // "empty packet, skip: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {}",
+                        // ctx.refslot, rx_sn, link.nesn, rx_nesn, link.sn
+                        // );
                         link.current_rx = None;
                         break 'rx;
                     }

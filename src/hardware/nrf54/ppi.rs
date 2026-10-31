@@ -1,7 +1,5 @@
 use crate::hardware::api::egu::{PrepareRx, Rx, TxAck};
 use crate::hardware::api::{EguDriver, PpiDriver};
-#[cfg(feature = "defmt")]
-use crate::hardware::ppi_timing::PpiTiming;
 use crate::hardware::{
     clock::Nrf54Clock,
     egu::{Nrf54Egu, Trigger},
@@ -203,11 +201,7 @@ impl PpiDriver for Nrf54Ppi {
     }
 
     fn configure_central(&mut self, clock: &mut Nrf54Clock, egu: &mut Nrf54Egu) {
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear_all();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
         let radio = pac::RADIO;
         radio.shorts().modify(|w| {
             w.set_ready_start(true);
@@ -249,16 +243,10 @@ impl PpiDriver for Nrf54Ppi {
         );
         self.error_group.disable();
         self.activate(&[0, 1]);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_central");
     }
 
     fn configure_sync(&mut self, clock: &mut Nrf54Clock, egu: &mut Nrf54Egu) {
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear_all();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
         let radio = pac::RADIO;
         radio.shorts().modify(|w| {
             w.set_ready_start(true);
@@ -291,8 +279,6 @@ impl PpiDriver for Nrf54Ppi {
             &[egu.subscribe_trigger(Trigger::TimeslotEnd.number())],
         );
         self.activate(&[0, 1, 2, 3, 4]);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_sync");
     }
 
     fn configure_rx(&mut self, clock: &mut Nrf54Clock, _egu: &mut Nrf54Egu) {
@@ -408,35 +394,19 @@ impl PpiDriver for Nrf54Ppi {
     }
 
     fn configure_peripheral_prepare_rx(&mut self, _clock: &mut Nrf54Clock, _egu: &mut Nrf54Egu) {
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear_peripheral_tx_ack();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
         self.activate(&[0, 9]);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_peripheral_prepare_rx");
     }
 
     fn configure_peripheral_next_rx(&mut self, _clock: &mut Nrf54Clock, _egu: &mut Nrf54Egu) {
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear_peripheral_tx_ack();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
         // Completion stays disarmed until the actual RX-start pulse enables
         // groups. Old CRCOK/timeout events cannot complete a future window.
         self.activate(&[0, 4, 7, 10]);
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_peripheral_next_rx");
     }
 
     fn configure_peripheral_tx_ack(&mut self, _egu: &mut Nrf54Egu) {
-        #[cfg(feature = "defmt")]
-        let mut ppi_timing = PpiTiming::start();
         self.clear_peripheral_next_rx();
-        #[cfg(feature = "defmt")]
-        ppi_timing.mark_cleared();
         // Completion must be armed before any START can transmit the ACK.
         self.activate(&[4, 6, 7]);
         // Make ACK data/PACKETPTR writes visible before enabling DMA START.
@@ -450,7 +420,5 @@ impl PpiDriver for Nrf54Ppi {
         if pac::RADIO.state().read().state() == pac::radio::vals::State::TxIdle {
             Nrf54Egu::trigger_regs(&pac::EGU10, Trigger::TxAck(TxAck::Start));
         }
-        #[cfg(feature = "defmt")]
-        ppi_timing.log("configure_peripheral_tx_ack");
     }
 }

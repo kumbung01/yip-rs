@@ -113,8 +113,8 @@ async fn session_task(session: YipSession, id: usize) {
                         defmt::info!("session disconnected");
                     }
                 }
-                Either4::Third(packet) => {
-                    defmt::info!("data: {}", packet.as_slice());
+                Either4::Third(_packet) => {
+                    // defmt::info!("data: {}", _packet.as_slice());
                 }
                 Either4::Fourth(()) => {
                     yip::peripheral::stop();

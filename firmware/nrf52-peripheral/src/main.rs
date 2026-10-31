@@ -112,19 +112,19 @@ async fn session_task(session: YipSession) {
                     defmt::info!("session disconnected");
                 }
             }
-            Either4::Third(packet) => {
+            Either4::Third(_packet) => {
                 stats.rx_packets += 1;
-                match core::str::from_utf8(packet.as_slice()) {
-                    Ok(text) => defmt::info!("data: {}", text),
-                    Err(_) => defmt::warn!("invalid UTF-8"),
-                }
-                defmt::info!(
-                    "stats: tx_attempts {} tx_queued {} tx_failed {} rx_packets {}",
-                    stats.tx_attempts,
-                    stats.tx_queued,
-                    stats.tx_attempts - stats.tx_queued,
-                    stats.rx_packets,
-                );
+                // match core::str::from_utf8(_packet.as_slice()) {
+                // Ok(text) => defmt::info!("data: {}", text),
+                // Err(_) => defmt::warn!("invalid UTF-8"),
+                // }
+                // defmt::info!(
+                // "stats: tx_attempts {} tx_queued {} tx_failed {} rx_packets {}",
+                // stats.tx_attempts,
+                // stats.tx_queued,
+                // stats.tx_attempts - stats.tx_queued,
+                // stats.rx_packets,
+                // );
             }
             Either4::Fourth(()) => {
                 next_send = Instant::now() + SEND_INTERVAL;
@@ -151,7 +151,7 @@ impl CommunicationStats {
         self.tx_attempts += 1;
         if tx.try_write(&arr).is_ok() {
             self.tx_queued += 1;
-            defmt::info!("send: attempt {} value {}", self.tx_attempts, value);
+            // defmt::info!("send: attempt {} value {}", self.tx_attempts, value);
         } else {
             defmt::warn!("send failed: attempt {} value {}", self.tx_attempts, value);
         }
