@@ -57,7 +57,6 @@ pub(crate) const RADIO_PREAMBLE_LEN_MODE: radiovals::Plen = radiovals::Plen::_16
 
 pub(crate) const RADIO_CRC_LEN_MODE: radiovals::Len = radiovals::Len::Two;
 pub(crate) const RADIO_CRC_SKIPADDR: radiovals::Skipaddr = radiovals::Skipaddr::Skip;
-pub(crate) const RADIO_TXADDRESS_INVALID: u8 = 7;
 pub(crate) const RADIO_RSSI_PADDING_BYTES: usize = 4;
 
 // base addresses + prefixes per pipe

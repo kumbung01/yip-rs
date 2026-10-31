@@ -19,7 +19,7 @@ async fn main(_spawner: Spawner) {
     config.lfclk_source = LfclkSource::ExternalXtal;
     let p = embassy_nrf::init(config);
     bind_interrupts!(struct Irqs { EGU10 => YipInterruptHandler; });
-    let device = DeviceContext::new(
+    let mut device = DeviceContext::new(
         p.RADIO,
         p.TIMER10,
         p.GRTC_CH0,
@@ -47,6 +47,9 @@ async fn main(_spawner: Spawner) {
         Irqs,
         0,
     );
+    let calibrated = device.calibrate_clock().await;
+    debug_assert!(calibrated, "GRTC/HF calibration failed");
+
     let session = yip::peripheral::init(device, 0);
     let (reader, _writer, _connection) = session.split();
     yip::peripheral::start();

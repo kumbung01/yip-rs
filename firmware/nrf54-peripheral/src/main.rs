@@ -38,7 +38,7 @@ async fn main(spawner: Spawner) {
         }
     );
 
-    let device = DeviceContext::new(
+    let mut device = DeviceContext::new(
         p.RADIO,
         p.TIMER10,
         p.GRTC_CH0,
@@ -66,6 +66,9 @@ async fn main(spawner: Spawner) {
         Irqs,
         0,
     );
+
+    let calibrated = device.calibrate_clock().await;
+    debug_assert!(calibrated, "GRTC/HF calibration failed");
 
     let session = yip::peripheral::init(device, PERIPHERAL_ID);
 
