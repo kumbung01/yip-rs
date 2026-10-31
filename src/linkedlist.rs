@@ -27,9 +27,9 @@ pub(crate) struct Node {
 impl Node {
     const fn new<const N: usize>(index: usize) -> Self {
         const {
-            assert!(N <= NodeIndex::MAX.get() as usize + 1);
+            debug_assert!(N <= NodeIndex::MAX.get() as usize + 1);
         }
-        assert!(index < N);
+        debug_assert!(index < N);
 
         Self {
             next: if index + 1 < N {
@@ -173,7 +173,7 @@ pub(crate) struct PoolInner<T, R: RawMutex, const N: usize> {
 impl<T: Reset, R: RawMutex, const N: usize> PoolInner<T, R, N> {
     pub(crate) const fn new(data: [UnsafeCell<T>; N]) -> Self {
         const {
-            assert!(N <= NodeIndex::MAX.get() as usize + 1, "invalid pool size");
+            debug_assert!(N <= NodeIndex::MAX.get() as usize + 1, "invalid pool size");
         }
 
         let head = if N > 0 { NodeIndex::new(0) } else { None };

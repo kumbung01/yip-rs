@@ -17,7 +17,7 @@ pub(crate) mod egu;
 pub(crate) mod ppi;
 pub(crate) mod radio;
 
-pub(crate) use clock::{ClockDriver, ClockTimestamp};
+pub(crate) use clock::ClockDriver;
 pub(crate) use egu::EguDriver;
 pub(crate) use ppi::PpiDriver;
 pub(crate) use radio::RadioDriver;

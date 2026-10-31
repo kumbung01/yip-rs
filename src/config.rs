@@ -68,13 +68,11 @@ pub(crate) const RADIO_ADDR_BASE_1: [u8; 4] = [0xC2, 0xC2, 0xC2, 0xC2];
 
 // scale between timer and rtc.
 #[cfg(feature = "nrf52840")]
-pub(crate) const TIMER_TICK_SCALED: u32 = 32 * (1 << TIMER_PRESCALE);
+pub(crate) const TIMER_TICK_SCALED: u32 = 16_384 / TIMER_TICKS_PER_US;
 
 // timer configs
 pub(crate) const TIMER_BITMODE: timervals::Bitmode = timervals::Bitmode::_32bit;
 pub(crate) const TIMER_FREQUENCY: Frequency = Frequency::F1MHz;
-#[cfg(feature = "nrf52840")]
-pub(crate) const TIMER_PRESCALE: u32 = TIMER_FREQUENCY as u32;
 
 // rtc configs
 #[cfg(feature = "nrf52840")]
@@ -119,8 +117,8 @@ pub(crate) const RADIO_RAMPUP_US: u32 = match YIP_RADIO_RAMPUP_MODE {
 
 #[cfg(feature = "nrf52840")]
 pub(crate) const RTC_TICK_HZ: u64 = {
-    assert!(RTC_PRESCALE <= 4095);
-    assert!(32_768 % (RTC_PRESCALE as u64 + 1) == 0);
+    debug_assert!(RTC_PRESCALE <= 4095);
+    debug_assert!(32_768 % (RTC_PRESCALE as u64 + 1) == 0);
 
     32_768 / (RTC_PRESCALE as u64 + 1)
 };
@@ -137,7 +135,7 @@ pub(crate) const TIMER_TICK_HZ: u64 = {
     }
 };
 pub(crate) const TIMER_TICKS_PER_US: u32 = {
-    assert!(TIMER_TICK_HZ % 1_000_000 == 0);
+    debug_assert!(TIMER_TICK_HZ % 1_000_000 == 0);
 
     (TIMER_TICK_HZ / 1_000_000) as u32
 };
@@ -152,8 +150,8 @@ pub(crate) const RADIO_BITS_PER_US: u32 = match YIP_RADIO_BITRATE {
 };
 
 pub(crate) const TIMER_TICKS_PER_BYTE: u32 = {
-    assert!(RADIO_BITS_PER_US > 0);
-    assert!((8 * TIMER_TICKS_PER_US) % RADIO_BITS_PER_US == 0);
+    debug_assert!(RADIO_BITS_PER_US > 0);
+    debug_assert!((8 * TIMER_TICKS_PER_US) % RADIO_BITS_PER_US == 0);
 
     8 * TIMER_TICKS_PER_US / RADIO_BITS_PER_US
 };
@@ -177,20 +175,6 @@ pub(crate) const ADDR_DELAY_TICKS: u32 = RADIO_RAMPUP_TIMER_TICKS
 
 pub(crate) const PACKETBUF_AIRTIME_TICKS: u32 =
     (size_of::<PacketBuffer>() as u32 + RADIO_CRC_LEN_BYTES) * TIMER_TICKS_PER_BYTE;
-
-// RTC_TICK_HZ는 실제 RTC 주파수 상수 이름에 맞춰 사용
-#[cfg(feature = "nrf52840")]
-pub(crate) const RTC_TICK_SCALED: u64 = {
-    let scaled_timer_hz = TIMER_TICKS_PER_US as u64 * 1_000_000 * TIMER_TICK_SCALED as u64;
-
-    assert!(RTC_TICK_HZ > 0);
-    assert!(scaled_timer_hz % RTC_TICK_HZ == 0);
-
-    scaled_timer_hz / RTC_TICK_HZ
-};
-
-#[cfg(feature = "nrf52840")]
-pub(crate) const RTC_MARGIN_SCALED: u32 = RADIO_MARGIN_RTC_TICKS * RTC_TICK_SCALED as u32;
 
 // helper functions
 #[inline]
@@ -229,29 +213,11 @@ pub(crate) const fn index_of(values: &[radiovals::Txpower], target: radiovals::T
     panic!("value not found");
 }
 
-macro_rules! debug {
-    ($($arg:tt)*) => {
-        #[cfg(feature = "defmt")]
-        defmt::debug!($($arg)*);
-        #[cfg(feature = "log")]
-        log::debug!($($arg)*);
-    };
-}
-
 macro_rules! error {
     ($($arg:tt)*) => {
         #[cfg(feature = "defmt")]
         defmt::error!($($arg)*);
         #[cfg(feature = "log")]
         log::error!($($arg)*);
-    };
-}
-
-macro_rules! info {
-    ($($arg:tt)*) => {
-        #[cfg(feature = "defmt")]
-        defmt::info!($($arg)*);
-        #[cfg(feature = "log")]
-        log::info!($($arg)*);
     };
 }

@@ -166,6 +166,20 @@ impl Nrf54Ppi {
             tasks,
         );
     }
+
+    pub(crate) fn calibration_capture(&mut self, clock: &Nrf54Clock, capture: usize) {
+        self.disable();
+        cortex_m::asm::dsb();
+        pac::TIMER10.subscribe_capture(2).write(|w| w.set_en(false));
+        pac::TIMER10.subscribe_capture(3).write(|w| w.set_en(false));
+        self.connect_grtc(clock, &[pac::TIMER10.subscribe_capture(capture)]);
+        self.activate(&[0]);
+    }
+
+    pub(crate) fn finish_calibration(&mut self) {
+        self.clear_all();
+        pac::TIMER10.subscribe_capture(3).write(|w| w.set_en(false));
+    }
 }
 
 impl Drop for Nrf54Ppi {

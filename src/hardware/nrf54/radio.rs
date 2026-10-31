@@ -155,9 +155,6 @@ impl RadioDriver for Nrf54Radio {
         self.configure_payload_format();
         self.set_short();
         self.set_radio_rampup_mode();
-
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        debug!("radio setup complete");
     }
 
     unsafe fn set_packetptr(&mut self, packet: *mut u8) {

@@ -57,9 +57,6 @@ impl<H> DeviceContext<H> {
             ..SlotContext::default()
         };
 
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        debug!("seed: {}", seed);
-
         // we set egu register here for triggering from session.
         let egu = Nrf52Egu::new(egu);
         register_egu(egu.regs());
@@ -75,7 +72,6 @@ impl<H> DeviceContext<H> {
             context,
             _handler: PhantomData,
         };
-        #[cfg(any(feature = "defmt", feature = "log"))]
         device.ppi.measure_rtc_ratio(&mut device.clock);
         device
     }
@@ -83,7 +79,7 @@ impl<H> DeviceContext<H> {
 
 impl<H> DeviceContext<H> {
     pub fn set_pipes(&mut self, pipes: usize) {
-        assert!(pipes > 0, "pipes must be bigger than 0");
+        debug_assert!(pipes > 0, "pipes must be bigger than 0");
 
         self.context.pipes = pipes;
     }

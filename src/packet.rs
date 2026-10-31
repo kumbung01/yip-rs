@@ -211,7 +211,6 @@ where
     pub(crate) fn append_from_slice(&mut self, slice: &[u8]) -> Result<(), ()> {
         let end = self.copied.checked_add(slice.len()).ok_or(())?;
         if end > self.total_len() {
-            debug!("append failed: total: {}, end: {}", self.packet.len, end);
             return Err(());
         }
 
@@ -246,7 +245,7 @@ where
     }
 
     pub(crate) fn is_ongoing(&self) -> bool {
-        assert!(
+        debug_assert!(
             self.total_len() >= self.copied,
             "total length must be >= copied"
         );
@@ -262,7 +261,6 @@ where
     pub(crate) fn set_total_len(&mut self, total_len: usize) -> Result<(), ()> {
         // we don't panic here, since data can be corrupted
         if total_len > YIP_PACKET_SIZE {
-            debug!("invalid packet size({})", total_len);
             return Err(());
         }
 

@@ -105,9 +105,11 @@ impl Nrf52Ppi {
     }
 
     /// One startup measurement, before any radio routes are installed.
-    #[cfg(any(feature = "defmt", feature = "log"))]
     pub(crate) fn measure_rtc_ratio(&mut self, clock: &mut Nrf52Clock) {
-        use embassy_nrf::{rtc::{CompareChannel, Interrupt}, timer::Frequency};
+        use embassy_nrf::{
+            rtc::{CompareChannel, Interrupt},
+            timer::Frequency,
+        };
 
         self.clear_all();
         clock.rtc.disable();
@@ -117,9 +119,15 @@ impl Nrf52Ppi {
         let rtc = clock.rtc.regs();
         let timer = clock.timer.regs();
         let start = crate::config::rtc_wrap(clock.rtc.read().wrapping_add(8));
-        let end = crate::config::rtc_wrap(start.wrapping_add(16_384));
-        clock.rtc.set_compare(CompareChannel::_1, start).expect("valid RTC compare");
-        clock.rtc.set_compare(CompareChannel::_2, end).expect("valid RTC compare");
+        let end = crate::config::rtc_wrap(start.wrapping_add(1024));
+        clock
+            .rtc
+            .set_compare(CompareChannel::_1, start)
+            .expect("valid RTC compare");
+        clock
+            .rtc
+            .set_compare(CompareChannel::_2, end)
+            .expect("valid RTC compare");
         rtc.events_compare(1).write_value(0);
         rtc.events_compare(2).write_value(0);
         timer.cc(2).write_value(0);
@@ -155,7 +163,9 @@ impl Nrf52Ppi {
         clock.timer.stop();
         clock.timer.clear();
         clock.timer.set_frequency(crate::config::TIMER_FREQUENCY);
-        clock.rtc_ratio_ticks = measured;
+        clock.ratio =
+            super::rtc_ratio::RtcRatio::measured(measured.expect("RTC/HF calibration timed out"))
+                .expect("RTC/HF calibration outside supported clock range");
     }
 }
 

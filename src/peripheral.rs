@@ -1,11 +1,8 @@
-#[cfg(any(feature = "defmt", feature = "log"))]
-use crate::hardware::api::ClockTimestamp;
 use crate::hardware::api::{ClockDriver, EguDriver, PpiDriver, RadioDriver};
 use core::cell::RefCell;
 use embassy_nrf::interrupt::{self, InterruptExt};
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
-use crate::hardware::Clock;
 use crate::hardware::clock::Timing;
 use crate::hardware::device::DeviceContext;
 use crate::hardware::egu::Trigger::{Start, TimeslotEnd};
@@ -54,7 +51,7 @@ impl Retry {
     }
 
     fn set_limit(&mut self, slot_ticks: u32) {
-        assert!(slot_ticks > 0, "slotsize must be greater than 0");
+        debug_assert!(slot_ticks > 0, "slotsize must be greater than 0");
         self.limit_slots =
             Some((us_to_timer_ticks(TIMEOUT_LIMIT_US_PERIPHERAL) as u32).div_ceil(slot_ticks));
     }
@@ -242,7 +239,6 @@ impl YipPeripheral {
     }
 
     fn resync(&mut self) {
-        debug!("resync");
         self.device.ppi.clear();
         self.device.radio.disable();
         self.slot.reset();
@@ -275,16 +271,6 @@ impl YipPeripheral {
 
         ppi.configure_sync(clock, egu);
         egu.select_interrupt(TimeslotEnd);
-
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        {
-            let ts = clock.get_start_ts().unscaled();
-            let cc = clock.get_start_hw();
-            debug!(
-                "start ts {:?} cc {:?} timeout {} slot {} ch {}",
-                ts, cc, _timeout, context.refslot, channel
-            );
-        }
     }
 
     fn sync_disabled(&mut self) {
@@ -302,24 +288,12 @@ impl YipPeripheral {
 
         let events = radio.take_interrupt_events();
 
-        debug!(
-            "sync disabled: now {}, rxready {}",
-            clock.get_now_peripheral(),
-            events.rxready
-        );
-
         let sync_packet = 'parse: {
             if !events.crc_ok || rxbuf.pdu1.packet_type() != PacketType::Control {
-                debug!(
-                    "crcok {}, ptype {:?}",
-                    events.crc_ok,
-                    rxbuf.pdu1.packet_type()
-                );
                 break 'parse None;
             }
 
             let Ok((_, body)) = rxbuf.read_header::<Self>() else {
-                debug!("header parse fail");
                 break 'parse None;
             };
 
@@ -335,12 +309,9 @@ impl YipPeripheral {
         };
 
         let Some(sync_packet) = sync_packet else {
-            debug!("invalid sync packet");
             self.sync_start();
             return;
         };
-
-        debug!("sync success");
 
         // set context here
         ctx.slot_ticks = sync_packet.slot_ticks;
@@ -363,7 +334,7 @@ impl YipPeripheral {
             .checked_sub(ADDR_DELAY_TICKS)
             .expect("ADDRESS capture must include address delay");
 
-        let Ok(new_hb) = Clock::update_timestamp_by_sync(clock.get_start_ts(), sync) else {
+        let Ok(new_hb) = clock.update_timestamp_by_sync(clock.get_start_ts(), sync) else {
             error!("hb set failed");
             self.sync_start();
             return;
@@ -378,11 +349,6 @@ impl YipPeripheral {
         self.slot.link.nesn = rxbuf.pdu1.nesn();
         self.slot.last_retry.set_limit(ctx.slot_ticks);
         self.slot.pkind = PacketKind::Empty;
-
-        debug!(
-            "slotsize {} pipes {} hb_loops {} refslot {} hb {:?}",
-            ctx.slot_ticks, ctx.pipes, tm.hb_loops, ctx.refslot, tm.hb
-        );
 
         // Explicitly switch from scan routes to connected RX/ACK routes.
         ppi.configure_rx(clock, egu);
@@ -422,7 +388,6 @@ impl YipPeripheral {
         self.state = PeripheralState::Rx;
 
         let Ok((loop_diff, _timeout)) = clock.set_next_slot_peripheral(&self.timing) else {
-            debug!("cannot get next slot, return to sync");
             self.sync_start();
             return;
         };
@@ -451,16 +416,6 @@ impl YipPeripheral {
         egu.select_interrupt(TimeslotEnd);
 
         self.timing.is_hb = loop_diff % self.timing.hb_loops == 0;
-
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        {
-            let ts = clock.get_start_ts().unscaled();
-            let cc = clock.get_start_hw();
-            debug!(
-                "start ts {:?} cc {:?} timeout {} slot {} ch {} is_hb {:?}",
-                ts, cc, _timeout, self.timing.slot_now, channel, self.timing.is_hb
-            );
-        }
     }
 
     fn disabled_rx(&mut self) {
@@ -495,30 +450,10 @@ impl YipPeripheral {
         if rx_failed {
             // do some timeout handle here
 
-            debug!(
-                "rx failed: crcok {} rxready {} txready {}",
-                events.crc_ok, events.rxready, events.txready
-            );
-
-            let rd = embassy_nrf::pac::RADIO;
-
-            debug!(
-                "rx failed: slot {} address {} end {} crcerror {}",
-                tm.slot_now,
-                rd.events_address().read() != 0,
-                rd.events_end().read() != 0,
-                rd.events_crcerror().read() != 0,
-            );
-
-            rd.events_address().write_value(0);
-            rd.events_end().write_value(0);
-            rd.events_crcerror().write_value(0);
-
             // we must check next slot
             tm.check_next_slot = true;
 
             if retry.is_timeout(tm.slot_now) {
-                debug!("Rx failed resync");
                 link.state = Disconnected;
                 ep.conn.signal(Disconnected);
 
@@ -543,8 +478,6 @@ impl YipPeripheral {
         let is_retransmit_payload = my_nesn != ur_sn;
 
         let Ok((header, body)) = rxbuf.read_header::<Self>() else {
-            debug!("invalid rx header");
-
             tm.check_next_slot = true;
 
             if retry.is_timeout(tm.slot_now) {
@@ -591,13 +524,11 @@ impl YipPeripheral {
                     }
                     PacketType::Start => {
                         let Some((&total_len, data)) = body.as_slice().split_first() else {
-                            // debug!("missing packet length, drop");
                             link.current_rx = None;
                             break 'rx_skip None;
                         };
 
                         if total_len == 0 {
-                            // debug!("empty packet");
                             link.current_rx = None;
                             break 'rx_retry None;
                         }
@@ -608,7 +539,6 @@ impl YipPeripheral {
                             .or_else(|| ep.rx.try_acquire().map(CurrentPacket::new));
 
                         let Some(mut rx_packet) = rx_packet else {
-                            // debug!("buf get fail, retry");
                             break 'rx_retry None;
                         };
 
@@ -624,25 +554,19 @@ impl YipPeripheral {
                         let data = body.as_slice();
 
                         if data.is_empty() {
-                            debug!("Continue data must not be empty!");
                             link.current_rx = None;
 
                             break 'rx_skip None;
                         }
 
                         let Some(rx_packet) = link.current_rx.take() else {
-                            debug!("we must have packet here! skip this packet");
                             break 'rx_skip None;
                         };
 
                         Some((rx_packet, body.as_slice()))
                     }
 
-                    PacketType::Invalid => {
-                        debug!("data has been corrupted, skip this packet");
-
-                        None
-                    }
+                    PacketType::Invalid => None,
                 }
             };
 
@@ -658,7 +582,6 @@ impl YipPeripheral {
         let is_new_packet_tx = if tx_failed {
             let slot_now = tm.slot_now;
             if retry.is_timeout(slot_now) {
-                debug!("Tx failed resync");
                 link.state = Disconnected;
                 ep.conn.signal(Disconnected);
                 self.resync();
@@ -768,37 +691,6 @@ impl YipPeripheral {
             return;
         }
 
-        // debug!(
-        // "tx: type {} len {} body {:x}",
-        // txbuf.pdu1.packet_type(),
-        // txbuf.len(),
-        // txbuf.data()
-        // );
-
-        // debug!(
-        // "rx: type {} len {} body {:x}",
-        // rx_packet_type,
-        // slice.len(),
-        // slice
-        // );
-
-        // debug!(
-        // "rx: current {{total {} copied {}}}",
-        // rx_packet.total_len(),
-        // rx_packet.copied()
-        // );
-
-        // debug!(
-        // "rx: {{sn {} ne {}}} tx: {{sn {} ne {}}} rssi: {}, txpower: {}, next_slot: {}",
-        // ur_sn,
-        // my_nesn,
-        // my_sn,
-        // ur_nesn,
-        // -(header.rssi as i8),
-        // (self.slot.tx_power.get().to_bits() as i8),
-        // tm.check_next_slot
-        // );
-
         if rx_packet.is_ongoing() {
             link.current_rx = Some(rx_packet);
             return;
@@ -818,7 +710,7 @@ impl YipPeripheral {
     }
 
     pub fn session_endpoints<const W: usize>() -> [YipSessionEndpoints; W] {
-        assert!(W <= YIP_MAX_LINK_COUNT);
+        debug_assert!(W <= YIP_MAX_LINK_COUNT);
 
         core::array::from_fn(|i| CHANNELS.session_ep(i))
     }

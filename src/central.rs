@@ -89,114 +89,11 @@ pub fn stop() {
     });
 }
 
-/// Temporary nRF52 diagnostics, called from thread mode rather than the radio ISR.
-#[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-pub fn log_status() {
-    let snapshot = IRQ_STACK.lock(|cell| {
-        let mut inner = cell.borrow_mut();
-        let central = inner.as_mut()?;
-        let timer = central.device.clock.timer.regs();
-        // Central scheduling uses CC3 as a software capture scratch register.
-        // The next scheduler invocation captures it again before reading it.
-        timer.tasks_capture(3).write_value(1);
-        let egu = central.device.egu.regs();
-        Some((
-            central.device.context.refslot,
-            central.turn,
-            central.state as u8,
-            timer.cc(3).read(),
-            timer.cc(0).read(),
-            timer.cc(1).read(),
-            egu.intenset().read().0,
-            egu.events_triggered(Trigger::TimeslotEnd.number()).read(),
-            central.tx_arm_snapshot,
-            (timer.events_compare(0).read(), timer.events_compare(1).read()),
-        ))
-    });
-    if let Some((slot, turn, state, now, next, timeout, egu_inten, egu_end, arm, compare)) = snapshot {
-        // Log after releasing IRQ_STACK and its critical section.
-        info!(
-            "central progress: slot {} turn {} state {} timer {} next_tx {} until_tx {} timeout {}",
-            slot, turn, state, now, next, next.wrapping_sub(now) as i32, timeout
-        );
-        info!(
-            "central hardware: ppi {:#x} egu_inten {:#x} egu_end {} radio_state {} crcok {} crcerror {}",
-            embassy_nrf::pac::PPI.chen().read().0,
-            egu_inten,
-            egu_end,
-            embassy_nrf::pac::RADIO.state().read().0,
-            embassy_nrf::pac::RADIO.events_crcok().read(),
-            embassy_nrf::pac::RADIO.events_crcerror().read(),
-        );
-        if let Some(arm) = arm {
-            info!(
-                "central TX prepare cycles: slot {} budget_us {} schedule {} turn_queue {} control {} sync {} payload_finish {} pdu {} queue_size {} md {} regs {} arm_enable {} total {}",
-                slot, arm.cc0.wrapping_sub(arm.schedule_start) as i32,
-                arm.cycles[1].wrapping_sub(arm.cycles[0]),
-                arm.cycles[2].wrapping_sub(arm.cycles[1]),
-                arm.cycles[3].wrapping_sub(arm.cycles[2]),
-                arm.cycles[4].wrapping_sub(arm.cycles[3]),
-                arm.cycles[5].wrapping_sub(arm.cycles[4]),
-                arm.cycles[6].wrapping_sub(arm.cycles[5]),
-                arm.cycles[7].wrapping_sub(arm.cycles[6]),
-                arm.cycles[8].wrapping_sub(arm.cycles[7]),
-                arm.cycles[9].wrapping_sub(arm.cycles[8]),
-                arm.cycles[10].wrapping_sub(arm.cycles[9]),
-                arm.cycles[10].wrapping_sub(arm.cycles[0]),
-            );
-            info!(
-                "central TX arm: slot {} cc0 {} before {} after {} left_before_us {} left_after_us {} compare0_before {} compare0_after {} chen_before {:#x} chen_after {:#x} radio_after {}",
-                slot, arm.cc0, arm.before, arm.after,
-                arm.cc0.wrapping_sub(arm.before) as i32,
-                arm.cc0.wrapping_sub(arm.after) as i32,
-                arm.event_before, arm.event_after,
-                arm.chen_before, arm.chen_after, arm.radio_after,
-            );
-            info!(
-                "central compare now: cc0_event {} cc1_event {} txready {} rxready {} disabled {}",
-                compare.0, compare.1,
-                embassy_nrf::pac::RADIO.events_txready().read(),
-                embassy_nrf::pac::RADIO.events_rxready().read(),
-                embassy_nrf::pac::RADIO.events_disabled().read(),
-            );
-        }
-    } else {
-        info!("central progress: not initialized");
-    }
-}
-
-#[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-#[derive(Clone, Copy)]
-struct TxArmSnapshot {
-    schedule_start: u32,
-    cycles: [u32; 11],
-    cc0: u32,
-    before: u32,
-    after: u32,
-    event_before: u32,
-    event_after: u32,
-    chen_before: u32,
-    chen_after: u32,
-    radio_after: u32,
-}
-
-#[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-#[inline(always)]
-fn tx_cycle_count() -> u32 {
-    use core::sync::atomic::{compiler_fence, Ordering};
-    compiler_fence(Ordering::SeqCst);
-    let cycles = cortex_m::peripheral::DWT::cycle_count();
-    compiler_fence(Ordering::SeqCst);
-    cycles
-}
-
 pub struct YipCentral {
     state: CentralState,
     turn: usize,
     slots: [Slot; YIP_MAX_LINK_COUNT],
     device: DeviceContext<YipInterruptHandler>,
-    #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-    tx_arm_snapshot: Option<TxArmSnapshot>,
 }
 
 #[repr(u8)]
@@ -251,12 +148,6 @@ impl YipCentral {
     }
 
     pub fn setup(&mut self) {
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        unsafe {
-            // Enable tracing and CYCCNT without resetting a counter used by other code.
-            (*cortex_m::peripheral::DCB::PTR).demcr.modify(|v| v | (1 << 24));
-            (*cortex_m::peripheral::DWT::PTR).ctrl.modify(|v| v | 1);
-        }
         let DeviceContext {
             clock,
             ppi,
@@ -264,8 +155,6 @@ impl YipCentral {
             context,
             ..
         } = &mut self.device;
-        #[cfg(any(feature = "defmt", feature = "log"))]
-        debug!("central setup");
 
         context.slot_ticks = YIP_SLOTSIZE_US as u32;
         ppi.configure_central(clock, egu);
@@ -277,7 +166,6 @@ impl YipCentral {
         use Trigger::*;
 
         if let Some(trigger) = self.device.egu.get_and_clear_triggered() {
-            // debug!("state {} trig {}", self.state, trigger);
             match (self.state, trigger) {
                 (Idle, Start) => self.prepare_tx(),
                 (Tx, TimeslotEnd) => self.timeslot_end(),
@@ -289,11 +177,9 @@ impl YipCentral {
 
 impl YipCentral {
     pub(crate) fn new(device: DeviceContext<YipInterruptHandler>, pipes: usize) -> Self {
-        assert!(pipes <= YIP_MAX_LINK_COUNT);
+        debug_assert!(pipes <= YIP_MAX_LINK_COUNT);
 
         let mut central = Self {
-            #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-            tx_arm_snapshot: None,
             state: CentralState::Idle,
             turn: 0,
             device,
@@ -325,22 +211,7 @@ impl YipCentral {
 
         self.state = CentralState::Tx;
 
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        let mut cycles = [0u32; 11];
-        macro_rules! mark_tx_cycle {
-            ($index:expr) => {
-                #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-                { cycles[$index] = tx_cycle_count(); }
-            };
-        }
-        mark_tx_cycle!(0);
         let slot_diff = clock.set_next_slot_central();
-
-        // Reuse the scheduler's actual time sample before CC3 is captured again.
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        let schedule_start = clock.timer.regs().cc(3).read();
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        { cycles[1] = tx_cycle_count(); }
 
         ctx.refslot = ctx.refslot.wrapping_add(slot_diff);
 
@@ -362,23 +233,18 @@ impl YipCentral {
             link.current_tx = ep.tx.try_receive().map(CurrentPacket::new);
         }
 
-        mark_tx_cycle!(2);
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        { cycles[3] = cycles[2]; cycles[4] = cycles[2]; }
-
         let (packet_type, more_frag) = match link.state {
             Disconnected => {
                 body.write(ControlHeader {
                     command: ControlCommand::Sync,
                 });
-                mark_tx_cycle!(3);
 
                 body.write(SyncPacket {
                     refslot: ctx.refslot,
                     slot_ticks: ctx.slot_ticks,
                     pipes: ctx.pipes as u8,
                 });
-                mark_tx_cycle!(4);
+
                 *ptype = PacketKind::Control;
                 (Control, link.current_tx.is_some())
             }
@@ -409,20 +275,17 @@ impl YipCentral {
             },
         };
 
-        mark_tx_cycle!(5);
         let pdu = &mut buf.pdu1;
 
         pdu.set_packet_type(packet_type);
 
         pdu.set_sn(link.sn);
         pdu.set_nesn(link.nesn);
-        mark_tx_cycle!(6);
+
         // Preserve short-circuiting: skip the queue lock when more_frag is true.
         let more_data = more_frag || ep.tx.queue.size() > 0;
-        mark_tx_cycle!(7);
-        pdu.set_md(more_data);
 
-        mark_tx_cycle!(8);
+        pdu.set_md(more_data);
 
         let channel = get_channel(ctx.refslot as u32);
         radio.set_channel(channel);
@@ -438,37 +301,7 @@ impl YipCentral {
 
         egu.select_interrupt(Trigger::TimeslotEnd);
 
-        mark_tx_cycle!(9);
-
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        let mut arm = {
-            let timer = clock.timer.regs();
-            let cc0 = timer.cc(0).read();
-            let event_before = timer.events_compare(0).read();
-            let chen_before = embassy_nrf::pac::PPI.chen().read().0;
-            timer.tasks_capture(3).write_value(1);
-            TxArmSnapshot {
-                schedule_start, cycles,
-                cc0, before: timer.cc(3).read(), after: 0,
-                event_before, event_after: 0, chen_before, chen_after: 0,
-                radio_after: 0,
-            }
-        };
-
         ppi.enable();
-        mark_tx_cycle!(10);
-
-        #[cfg(all(feature = "nrf52840", any(feature = "defmt", feature = "log")))]
-        {
-            let timer = clock.timer.regs();
-            timer.tasks_capture(3).write_value(1);
-            arm.after = timer.cc(3).read();
-            arm.event_after = timer.events_compare(0).read();
-            arm.chen_after = embassy_nrf::pac::PPI.chen().read().0;
-            arm.radio_after = embassy_nrf::pac::RADIO.state().read().0;
-            arm.cycles = cycles;
-            self.tx_arm_snapshot = Some(arm);
-        }
     }
 
     fn timeslot_end(&mut self) {
@@ -499,15 +332,6 @@ impl YipCentral {
                 }
 
                 if alive.is_timeout(ctx.refslot) {
-                    debug!(
-                        "link timeout: id {} slot {} last_rx_slot {} gap_slots {} tx_sn {} expected_sn {}",
-                        self.turn,
-                        ctx.refslot,
-                        alive.0,
-                        ctx.refslot.wrapping_sub(alive.0),
-                        link.sn,
-                        link.nesn
-                    );
                     link.state = Disconnected;
                     ep.conn.signal(Disconnected);
                     link.reset();
@@ -540,23 +364,12 @@ impl YipCentral {
             let duplicate_payload = rx_sn != link.nesn;
 
             if duplicate_payload {
-                // debug!(
-                // "duplicate: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {} len {}",
-                // ctx.refslot,
-                // rx_sn,
-                // link.nesn,
-                // rx_nesn,
-                // link.sn,
-                // buf.len()
-                // );
                 break 'rx;
             }
 
             let rx_packet_type = buf.pdu1.packet_type();
 
             let Ok((_header, body)) = buf.read_header::<Self>() else {
-                debug!("invalid rx header");
-
                 self.prepare_tx();
 
                 return;
@@ -582,16 +395,11 @@ impl YipCentral {
 
                 Start => 'rx_start: {
                     let Some((&total_len, data)) = body.as_slice().split_first() else {
-                        debug!("missing packet length, drop");
                         link.current_rx = None;
                         break 'rx_start;
                     };
 
                     if total_len == 0 {
-                        // debug!(
-                        // "empty packet, skip: slot {} rx_sn {} expected_sn {} rx_nesn {} tx_sn {}",
-                        // ctx.refslot, rx_sn, link.nesn, rx_nesn, link.sn
-                        // );
                         link.current_rx = None;
                         break 'rx;
                     }
@@ -602,7 +410,6 @@ impl YipCentral {
                         .or_else(|| ep.rx.try_acquire().map(CurrentPacket::new));
 
                     let Some(mut rx_packet) = rx_packet else {
-                        debug!("buf get fail, retry");
                         break 'rx;
                     };
 
@@ -627,19 +434,16 @@ impl YipCentral {
                     let data = body.as_slice();
 
                     if data.is_empty() {
-                        debug!("{:?} data must not be empty!", Continue);
                         link.current_rx = None;
 
                         break 'rx_cont;
                     }
 
                     let Some(mut rx_packet) = link.current_rx.take() else {
-                        debug!("we must have packet here! skip this packet");
                         break 'rx_cont;
                     };
 
                     if rx_packet.append_from_slice(data).is_err() {
-                        debug!("drop this packet");
                         break 'rx_cont;
                     }
 
@@ -650,15 +454,10 @@ impl YipCentral {
                     }
                 }
 
-                Invalid => {
-                    debug!("data has been corrupted, skip this packet");
-                }
+                Invalid => {}
             };
 
             link.nesn = !link.nesn;
-
-            // debug!("rx type {} len {}", rx_packet_type, buf.len());
-            // debug!("rx data: {}", buf.data()[0..buf.len()]);
         }
 
         'tx_commit: {
@@ -693,7 +492,7 @@ impl YipCentral {
     }
 
     pub fn session_endpoints<const W: usize>() -> [YipSessionEndpoints; W] {
-        assert!(W <= YIP_MAX_LINK_COUNT);
+        debug_assert!(W <= YIP_MAX_LINK_COUNT);
 
         core::array::from_fn(|i| CHANNELS.session_ep(i))
     }

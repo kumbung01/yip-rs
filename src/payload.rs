@@ -6,7 +6,8 @@ pub trait Payload: Sized {
     const SIZE: usize;
     #[inline(always)]
     fn encode(self, dst: &mut [u8]) {
-        assert!(dst.len() >= Self::SIZE, "payload destination too short");
+        debug_assert!(dst.len() >= Self::SIZE, "payload destination too short");
+        let dst = &mut dst[..Self::SIZE];
         // SAFETY: The complete encoded payload fits in the destination.
         unsafe { self.encode_unchecked(dst.as_mut_ptr()) };
     }

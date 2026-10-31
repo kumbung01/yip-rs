@@ -62,15 +62,12 @@ impl PacketBuffer {
     fn write<T: Payload>(&mut self, value: T) {
         let start = self.pdu0.length() as usize;
         let end = start + T::SIZE;
-        assert!(
+        debug_assert!(
             end <= YIP_SUB_PACKET_SIZE,
             "end must be smaller than sub packet size"
         );
 
-        // SAFETY: The capacity check above covers the complete payload, including every field.
-        let dst = unsafe {
-            core::slice::from_raw_parts_mut(self.data.as_mut_ptr().add(start), T::SIZE)
-        };
+        let dst = &mut self.data[start..end];
         // The slice length equals SIZE, so encode's entry check is statically satisfied.
         value.encode(dst);
         self.pdu0.set_length(end as u8);

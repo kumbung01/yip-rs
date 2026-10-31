@@ -19,8 +19,9 @@ static EGU10_TAKEN: AtomicBool = AtomicBool::new(false);
 
 impl Nrf54Egu {
     pub fn new() -> Self {
-        assert!(
-            !EGU10_TAKEN.swap(true, Ordering::Relaxed),
+        let already_taken = EGU10_TAKEN.swap(true, Ordering::Relaxed);
+        debug_assert!(
+            !already_taken,
             "EGU10 is already in use"
         );
 

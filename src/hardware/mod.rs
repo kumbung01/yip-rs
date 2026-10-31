@@ -20,7 +20,7 @@ mod nrf54;
 pub(crate) use nrf54::*;
 
 #[cfg(feature = "nrf52840")]
-pub(crate) use nrf52::{clock::Nrf52Clock as Clock, egu::Nrf52Egu as Egu};
+pub(crate) use nrf52::egu::Nrf52Egu as Egu;
 
 #[cfg(feature = "nrf54lm20")]
-pub(crate) use nrf54::{clock::Nrf54Clock as Clock, egu::Nrf54Egu as Egu};
+pub(crate) use nrf54::egu::Nrf54Egu as Egu;
