@@ -153,6 +153,15 @@ impl<'d, D: Domain> Group<'d, D> {
             .modify(|w| w.set_ch(channel, true));
     }
 
+    /// Replace the group mask with both EN/DIS subscriptions disconnected.
+    pub fn set_channels(&mut self, channels: &[usize]) {
+        D::regs().chg(self.number()).write(|w| {
+            for &channel in channels {
+                w.set_ch(channel, true);
+            }
+        });
+    }
+
     pub fn enable(&mut self) {
         D::regs().tasks_chg(self.number()).en().write_value(1);
     }

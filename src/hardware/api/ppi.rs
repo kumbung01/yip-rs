@@ -8,6 +8,8 @@ pub(crate) trait PpiDriver {
     fn disable(&mut self);
     fn configure_central(&mut self, clock: &mut Self::Clock, egu: &mut Self::Egu);
     fn configure_sync(&mut self, clock: &mut Self::Clock, egu: &mut Self::Egu);
+    /// Install connected RX/ACK routes after sync, leaving channels disarmed.
+    fn configure_rx(&mut self, clock: &mut Self::Clock, egu: &mut Self::Egu);
     fn configure_peripheral_prepare_rx(&mut self, clock: &mut Self::Clock, egu: &mut Self::Egu);
     fn configure_peripheral_next_rx(&mut self, clock: &mut Self::Clock, egu: &mut Self::Egu);
     fn configure_peripheral_tx_ack(&mut self, egu: &mut Self::Egu);

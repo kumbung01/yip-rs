@@ -9,94 +9,100 @@ arithmetic in the nRF54 path. The quarter-step drift correction is quantized
 to whole microseconds; the early receive window is retained. The nRF52 backend
 keeps its RTC fixed-point representation internally.
 
+## RRAM latency feature
+
+Enable YIP's optional `reduce-rram-latency` feature together with `nrf54lm20`
+to reduce the peripheral's connected RX interrupt wake-up latency. Before
+arming RX, it sets `RRAMC.POWER.LOWPOWERCONFIG.MODE` to Standby and triggers
+RRAM wake-up. RX completion (including failures) and peripheral stop set the
+mode back to PowerOff. This behavior does not depend on `defmt`.
+
+The feature is disabled by default and has no effect on other chip backends or
+the central role. With it disabled, YIP does not modify RRAMC power settings.
+Standby increases idle power while an RX window is scheduled. This changes
+global RRAMC settings, so applications sharing RRAMC must coordinate this policy.
+The `firmware/nrf54-peripheral` package enables the feature explicitly.
+
 ## Resources
 
-- RADIO, **TIMER10**, EGU10 (RADIO domain / DPPIC10).
-- One owned GRTC CC0..10 (PERI domain / DPPIC20). CC11 remains owned by Embassy.
-- Five RADIO DPPI channels and one PERI DPPI channel.
-- PPIB21 -> PPIB11 bridge, as allocated in `firmware/central`.
-- Two RADIO DPPI groups, both gating address capture and automatic ACK.
+- RADIO, TIMER10 and EGU10 in the RADIO DPPI domain (DPPIC10).
+- One owned GRTC CC0..10 in the PERI domain; Embassy retains CC11.
+- Eleven RADIO DPPI channels, one PERI channel and one PPIB21 -> PPIB11 bridge pair.
+- Four RADIO groups: RX, RX error, RX completion and ACK start.
 
-`DeviceContext::new` accepts TIMER10 explicitly, five RADIO channel tokens,
-and two group tokens. This prevents allocating a TIMER in a different DPPI domain.
-Stopping a role disarms only its GRTC compare channel; it never stops the shared
-GRTC counter or Embassy's CC11 timer service.
+`DeviceContext::new` takes eleven RADIO channel tokens and four group tokens.
+Central retains its three-channel routing, with the remaining owned channels disabled.
+Stopping disarms only the owned GRTC compare, never the shared counter or CC11.
 
-## Receive / ACK routes
+## Fixed connected RX / ACK routes
 
-Channel numbers here are array positions, not hardcoded hardware channel IDs.
+The role explicitly calls `configure_rx()` once after successful sync. Subsequent prepare/RX/ACK
+transitions disable owned channels, wait for register writes to complete, and
+arm a new channel mask. They do not rewrite publishers, subscribers, shorts or
+group membership. There is no cached layout or initialization check. Stop disarms
+the routes; `configure_sync()` installs scan routes on restart/resync, and the
+next successful sync explicitly installs connected routes again.
+Channel numbers below are array positions, not hardware channel IDs.
 
-| RADIO channel | Publishers | Subscribers |
+| Channel | Publishers | Subscribers |
 | --- | --- | --- |
-| 0 | PPIB receive from GRTC compare | TIMER start, RADIO RXEN, both group EN tasks |
-| 1 | RADIO RXADDRESS | TIMER capture 2 |
-| 2 | TIMER compare 1, RADIO CRCERROR | error group DIS, EGU task 2 |
-| 3 | RADIO CRCOK, EGU event 2 | TimeslotEnd task, RADIO DISABLE, TIMER stop/clear |
-| 4 | RADIO DISABLED | RADIO TXEN, one-shot group DIS |
+| 0 | GRTC through PPIB | EGU PrepareRx::Wake, Rx::Rxen |
+| 1 | RXADDRESS | TIMER capture 2 |
+| 2 | TIMER compare 1, CRCERROR | error group DIS, EGU Rx::Failure |
+| 3 | CRCOK, EGU Rx::Failure | RADIO DISABLE, EGU Rx::Done, completion group DIS |
+| 4 | DISABLED | EGU Rx::Disabled, TxAck::Disabled |
+| 5 | EGU Rx::Disabled | TXEN, RX group DIS |
+| 6 | EGU TxAck::Disabled | EGU TxAck::Done |
+| 7 | EGU Rx::Done, TxAck::Done | EGU TimeslotEnd |
+| 8 | TXREADY, EGU TxAck::Start | RADIO START, ACK-start group DIS |
+| 9 | EGU PrepareRx::Wake | EGU Start |
+| 10 | EGU Rx::Rxen | RXEN, TIMER START, all three RX group EN tasks |
 
-The error path disables ACK before forwarding to completion through EGU event 2.
-Its interrupt is never enabled, preserving the invariant that only Start or
-TimeslotEnd is an enabled EGU interrupt. Two groups are needed because one
-DPPI task cannot subscribe to two different channels.
+EGU numbers are part of the shared `Trigger` API. IRQ indices remain 0
+(TimeslotEnd) and 1 (Start). Internal relays descend from 15:
+Rx::{Rxen,Failure,Done,Disabled}=15..12, PrepareRx::Wake=11,
+TxAck::{Disabled,Done,Start}=10..8. Relay interrupts are never enabled.
+Sync and connected RX reuse Rx::Rxen with different bindings installed at
+explicit mode transitions.
+EGU flags do not replay events when an output channel is enabled.
 
-Scan mode ends on RADIO DISABLED (including timeout), without auto-ACK.
-Prepare mode forwards GRTC compare to Start. ACK mode forwards RADIO DISABLED
-to TimeslotEnd. During connected RX, only RXREADY automatically triggers START.
-RX DISABLED triggers TXEN to overlap ACK ramp-up with CPU processing; TX may
-remain in TXIDLE until ACK data is ready. `configure_peripheral_tx_ack` first
-installs the DISABLED completion route, then arms a one-shot START route:
+| State | Initially enabled RADIO channels |
+| --- | --- |
+| Preparation wakeup | 0, 9 |
+| Scheduled RX | 0, 4, 7, 10 |
+| ACK completion armed | 4, 6, 7 |
+| ACK ready to start | 4, 6, 7, 8 |
 
-| Reused RADIO channel | Publishers | Subscribers |
-| --- | --- | --- |
-| 0 | RADIO DISABLED | TimeslotEnd task |
-| 1 | RADIO TXREADY, EGU event 3 | RADIO START, one-shot group DIS |
+Actual RX start enables the RX/error groups (1,2,5) and completion group (2,3).
+Failure disables automatic TXEN before forwarding completion. CRCOK or forwarded
+failure disables both completion sources. Successful RX DISABLED ramps TX up
+and disarms the RX group. ACK completion routing is armed before channel 8;
+a DSB makes ACK data/PACKETPTR writes visible before START. Channel 8 disables
+itself after the first request. If TXREADY already happened, software triggers
+TxAck::Start through that same one-shot route; there is no busy waiting.
+Connected RX uses RXREADY_START, with READY_START off.
 
-The START group contains channel 1, so the first request disables its own route.
-After arming, if RADIO is already TXIDLE, software triggers EGU event 3 to handle
-a READY that occurred before connection. Both requests use the same one-shot
-route; there is no competing direct CPU START or ramp-up polling loop. Event 3
-does not enable an IRQ. A valid CRC is accepted even when TXREADY preceded the
-receive handler, since the ACK still has not started. Scan/central retain
-READY -> START. No new RADIO channels or groups are allocated for ACK START.
-Each mode disconnects old endpoints before connecting new ones;
-cleanup uses the owned GRTC channel rather than assuming CC0.
-
-## ACK timing diagnostics
-
-With `defmt`, connected RX keeps TIMER10 running after completion so interrupt
-latency includes CPU sleep/wakeup time. DPPI captures completion (CRCOK on a
-successful receive) in CC3 and RX DISABLED / TXEN in CC4. The IRQ handler captures
-CC5 before locking or dispatch. `disabled_rx` uses CC0 for its entry and the
-instant just before updating PACKETPTR. CC2 remains the RXADDRESS sync capture.
-The timeout channel is disabled at RX DISABLED to prevent a second completion
-while preparing the ACK; the timer is stopped/cleared when arming ACK completion.
-
-`ACK timing` is printed after arming an empty ACK. Its fields are microseconds
-at the configured 1 MHz TIMER frequency:
-
-- `event_to_irq_us`: completion event to the first capture in the IRQ handler.
-- `irq_to_handler_us`: IRQ capture to `disabled_rx` entry capture.
-- `handler_to_ptr_us`: entry capture to the capture just before PACKETPTR setup.
-- `txen_to_ptr_us`: RX DISABLED / TXEN capture to the pre-PACKETPTR capture.
-
-Captures add diagnostic overhead and have 1 us resolution. Without `defmt`, the
-original TIMER stop/clear completion route is retained.
-
-`ACK cycles` adds DWT snapshots on both chip backends. Fields are CPU cycles,
-not microseconds: `events` covers RADIO event reads/clears; `header` includes
-validation and header decoding; `rx` covers receive processing; `commit` covers
-ACK/retry bookkeeping; `build` covers outgoing payload construction and queue
-access; `power` covers power control and sequence-bit setup; `regs` covers
-PACKETPTR/TXADDRESS writes; `arm` covers PPI/EGU setup. Logging occurs after ACK arming. Instrumentation
-adds overhead, and these fields exclude the existing pre-PACKETPTR diagnostic
-captures between `power` and `regs`, so their sum is not a full-handler total.
-
-At startup, `ACK memory config` reports the existing cache enable state, RRAM
-low-power mode bits and constant-latency status. It does not change them.
-The phase measurements localize cost but do not by themselves prove that RRAM
-instruction fetches are responsible; that requires a controlled comparison.
+Scan/sync uses a separate graph, with GRTC -> EGU Rx::Rxen -> RXEN/TIMER START
+and completion on DISABLED. Peripheral TIMER CC1 compare uses STOP/CLEAR
+shorts instead of completion-channel STOP/CLEAR subscriptions. On early CRCOK
+or CRCERROR, the timer continues until CC1 or the next RX setup, which explicitly
+stops and clears it. CC2 ADDRESS capture remains available for sync processing.
+Central retains its existing CC0/DPPI timer cleanup. Scan and central retain READY_START. Switching
+between sync and connected mode rewires endpoints with all owned channels off.
+The added EGU hops change hardware propagation delay; board verification is
+required for timing and drift, especially sync acquisition and automatic TXEN.
 
 ## Validation
+
+With `defmt`, each PPI configuration function reports `PPI configure_...`:
+the cycles/ns spent clearing the old configuration, setting the new one, and
+the total cycle count. DWT is enabled without resetting its existing count;
+the scheduling TIMER and its capture channels are not used for profiling.
+The conversion reads the current 64/128 MHz CPU clock. Output occurs only after
+configuration (and ACK START arming) is complete, outside the measured interval.
+Captures and logging still add execution overhead, even though logging is not
+included in the reported duration. The measurements cover CPU execution and
+register writes, not end-to-end DPPI/PPIB propagation latency.
 
 From the repository root:
 

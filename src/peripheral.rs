@@ -7,10 +7,8 @@ use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 
 use crate::hardware::Clock;
 use crate::hardware::clock::Timing;
-#[cfg(feature = "defmt")]
-use crate::hardware::cyccnt::{self, Cycle};
 use crate::hardware::device::DeviceContext;
-use crate::hardware::egu::Trigger::*;
+use crate::hardware::egu::Trigger::{Start, TimeslotEnd};
 use crate::hardware::impl_yip_egu_handlers;
 use crate::session::YipSession;
 use crate::{config::*, enable_start};
@@ -126,7 +124,7 @@ pub fn stop() {
 
 pub fn init(device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
     #[cfg(feature = "defmt")]
-    crate::hardware::cyccnt::init();
+    crate::hardware::ppi_timing::init();
 
     let irq = device.egu.irq();
 
@@ -173,8 +171,7 @@ impl YipPeripheral {
         self.slot.reset();
         CHANNELS.link_ep(0).clear();
 
-        // temporary fix, to reduce latency for nrf54
-        #[cfg(feature = "nrf54lm20")]
+        #[cfg(all(feature = "nrf54lm20", feature = "reduce-rram-latency"))]
         {
             embassy_nrf::pac::RRAMC
                 .power()
@@ -279,6 +276,8 @@ impl YipPeripheral {
         let DeviceContext {
             radio,
             clock,
+            ppi,
+            egu,
             context: ctx,
             ..
         } = &mut self.device;
@@ -370,6 +369,9 @@ impl YipPeripheral {
             ctx.slot_ticks, ctx.pipes, tm.hb_loops, ctx.refslot, tm.hb
         );
 
+        // Explicitly switch from scan routes to connected RX/ACK routes.
+        ppi.configure_rx(clock, egu);
+
         let ep = CHANNELS.link_ep(0);
 
         self.slot.link.state = Connected(Normal);
@@ -418,13 +420,8 @@ impl YipPeripheral {
             radio.set_packetptr(self.rxbuf.as_mut_ptr());
         }
 
-        ppi.configure_peripheral_next_rx(clock, egu);
-        egu.select_interrupt(TimeslotEnd);
-
-        self.timing.is_hb = loop_diff % self.timing.hb_loops == 0;
-
-        // temporary fix, to reduce latency for nrf54
-        #[cfg(feature = "nrf54lm20")]
+        // Prepare RRAM before arming RX so the completion IRQ can wake quickly.
+        #[cfg(all(feature = "nrf54lm20", feature = "reduce-rram-latency"))]
         {
             embassy_nrf::pac::RRAMC
                 .power()
@@ -432,12 +429,13 @@ impl YipPeripheral {
                 .modify(|w| {
                     w.set_mode(embassy_nrf::pac::rramc::vals::Mode::Standby);
                 });
-        }
-
-        #[cfg(all(feature = "nrf54lm20", feature = "defmt"))]
-        {
             embassy_nrf::pac::RRAMC.tasks_wakeup().write_value(1);
         }
+
+        ppi.configure_peripheral_next_rx(clock, egu);
+        egu.select_interrupt(TimeslotEnd);
+
+        self.timing.is_hb = loop_diff % self.timing.hb_loops == 0;
 
         #[cfg(feature = "defmt")]
         {
@@ -451,25 +449,6 @@ impl YipPeripheral {
     }
 
     fn disabled_rx(&mut self) {
-        // CC3: completion event, CC4: RX DISABLED / TXEN, CC5: IRQ entry.
-        // CC0 is unused in the nRF54 connected RX path.
-        #[cfg(all(feature = "nrf54lm20", feature = "defmt"))]
-        let ack_timing = {
-            let timer = embassy_nrf::pac::TIMER10;
-            timer.tasks_capture(0).write_value(1);
-            (
-                timer.cc(3).read(),
-                timer.cc(4).read(),
-                timer.cc(5).read(),
-                timer.cc(0).read(),
-            )
-        };
-
-        #[cfg(feature = "defmt")]
-        let ack_prepare_start = cyccnt::start();
-        #[cfg(feature = "defmt")]
-        let ack_state_at_entry = embassy_nrf::pac::RADIO.state().read().0;
-
         let DeviceContext {
             radio,
             clock,
@@ -479,21 +458,12 @@ impl YipPeripheral {
             ..
         } = &mut self.device;
         let rxbuf = &mut self.rxbuf;
-        #[cfg(all(feature = "nrf52840", feature = "defmt"))]
-        let ack_timing = {
-            let timer = clock.timer.regs();
-            let event = timer.cc(3).read();
-            let irq = timer.cc(0).read();
-            timer.tasks_capture(0).write_value(1);
-            (event, irq, timer.cc(0).read())
-        };
         let retry = &mut self.slot.last_retry;
         let link = &mut self.slot.link;
         let tm = &mut self.timing;
         let ep = CHANNELS.link_ep(0);
 
-        // temporary fix, to reduce latency for nrf54
-        #[cfg(feature = "nrf54lm20")]
+        #[cfg(all(feature = "nrf54lm20", feature = "reduce-rram-latency"))]
         {
             embassy_nrf::pac::RRAMC
                 .power()
@@ -503,11 +473,7 @@ impl YipPeripheral {
                 });
         }
 
-        #[cfg(feature = "defmt")]
-        let phase_events_start = cyccnt::start().as_cycles();
         let events = radio.take_interrupt_events();
-        #[cfg(feature = "defmt")]
-        let phase_events_end = cyccnt::start().as_cycles();
         let rx_failed = !events.crc_ok;
         // Both backends keep TX in TXIDLE until ACK setup. TXREADY may
         // legitimately precede this handler and is not an RX failure.
@@ -579,10 +545,6 @@ impl YipPeripheral {
         };
 
         #[cfg(feature = "defmt")]
-        let mut end = Cycle(0);
-        #[cfg(feature = "defmt")]
-        let phase_header_end = cyccnt::start().as_cycles();
-        #[cfg(feature = "defmt")]
         let mut log_sync_after_ack = false;
         let rx_outcome: Option<(CurrentRx, &[u8])> = 'rx_retry: {
             if is_retransmit_payload {
@@ -625,16 +587,10 @@ impl YipPeripheral {
                             break 'rx_retry None;
                         }
 
-                        let rx_packet = link.current_rx.take().or_else(|| {
-                            #[cfg(feature = "defmt")]
-                            let start = cyccnt::start();
-                            let packet = ep.rx.try_acquire();
-                            #[cfg(feature = "defmt")]
-                            {
-                                end = cyccnt::end(start);
-                            }
-                            packet.map(CurrentPacket::new)
-                        });
+                        let rx_packet = link
+                            .current_rx
+                            .take()
+                            .or_else(|| ep.rx.try_acquire().map(CurrentPacket::new));
 
                         let Some(mut rx_packet) = rx_packet else {
                             // debug!("buf get fail, retry");
@@ -679,8 +635,6 @@ impl YipPeripheral {
             slice
         };
 
-        #[cfg(feature = "defmt")]
-        let phase_rx_end = cyccnt::start().as_cycles();
         let txbuf = &mut self.slot.txbuf;
 
         // central requested same nesn, so tx failed
@@ -717,9 +671,6 @@ impl YipPeripheral {
             }
             true
         };
-
-        #[cfg(feature = "defmt")]
-        let phase_commit_end = cyccnt::start().as_cycles();
 
         // we have to send new (sub)packet
         if is_new_packet_tx {
@@ -762,45 +713,16 @@ impl YipPeripheral {
                 || tm.is_hb;
         }
 
-        #[cfg(feature = "defmt")]
-        let phase_build_end = cyccnt::start().as_cycles();
         if self.slot.tx_power.update(header.rssi) {
             radio.set_tx_power(self.slot.tx_power.get());
         }
 
         txbuf.pdu1.set_sn(link.sn);
         txbuf.pdu1.set_nesn(link.nesn);
-        #[cfg(feature = "defmt")]
-        let phase_power_end = cyccnt::start().as_cycles();
 
-        #[cfg(feature = "defmt")]
-        let ack_state_before_ptr = embassy_nrf::pac::RADIO.state().read().0;
-        #[cfg(feature = "defmt")]
-        let ack_prepare_cycles = cyccnt::end(ack_prepare_start);
-        #[cfg(all(feature = "nrf52840", feature = "defmt"))]
-        let ack_before_ptr = {
-            let timer = clock.timer.regs();
-            timer.tasks_capture(0).write_value(1);
-            let now = timer.cc(0).read();
-            timer.tasks_stop().write_value(1);
-            timer.tasks_clear().write_value(1);
-            now
-        };
-        #[cfg(all(feature = "nrf54lm20", feature = "defmt"))]
-        let ack_before_ptr = {
-            let timer = embassy_nrf::pac::TIMER10;
-            timer.tasks_capture(0).write_value(1);
-            timer.cc(0).read()
-        };
-
-        #[cfg(feature = "defmt")]
-        let phase_regs_start = cyccnt::start().as_cycles();
         unsafe {
             radio.set_packetptr(txbuf.as_mut_ptr());
         }
-
-        #[cfg(feature = "defmt")]
-        let phase_regs_end = cyccnt::start().as_cycles();
 
         // after tx
 
@@ -809,67 +731,10 @@ impl YipPeripheral {
         egu.select_interrupt(TimeslotEnd);
 
         self.state = PeripheralState::TxAck;
-        #[cfg(feature = "defmt")]
-        let phase_arm_end = cyccnt::start().as_cycles();
 
         #[cfg(feature = "defmt")]
         if log_sync_after_ack {
             error!("peripheral should not send this");
-        }
-
-        if self.slot.pkind == PacketKind::Empty {
-            debug!(
-                "ACK cycles: slot {} events {} header {} rx {} commit {} build {} power {} regs {} arm {}",
-                tm.slot_now,
-                phase_events_end.wrapping_sub(phase_events_start),
-                phase_header_end.wrapping_sub(phase_events_end),
-                phase_rx_end.wrapping_sub(phase_header_end),
-                phase_commit_end.wrapping_sub(phase_rx_end),
-                phase_build_end.wrapping_sub(phase_commit_end),
-                phase_power_end.wrapping_sub(phase_build_end),
-                phase_regs_end.wrapping_sub(phase_regs_start),
-                phase_arm_end.wrapping_sub(phase_regs_end)
-            );
-            #[cfg(all(feature = "nrf52840", feature = "defmt"))]
-            {
-                let (event, irq, handler) = ack_timing;
-                debug!(
-                    "ACK timing: slot {} event_to_irq_us {} irq_to_handler_us {} handler_to_ptr_us {} event_to_ptr_us {}",
-                    tm.slot_now,
-                    irq.wrapping_sub(event),
-                    handler.wrapping_sub(irq),
-                    ack_before_ptr.wrapping_sub(handler),
-                    ack_before_ptr.wrapping_sub(event)
-                );
-            }
-            #[cfg(all(feature = "nrf54lm20", feature = "defmt"))]
-            {
-                let (event, txen, irq, handler) = ack_timing;
-                debug!(
-                    "ACK timing: slot {} event_to_irq_us {} irq_to_handler_us {} handler_to_ptr_us {} txen_to_ptr_us {}",
-                    tm.slot_now,
-                    irq.wrapping_sub(event),
-                    handler.wrapping_sub(irq),
-                    ack_before_ptr.wrapping_sub(handler),
-                    ack_before_ptr.wrapping_sub(txen)
-                );
-            }
-            debug!(
-                "empty ACK: slot {} tx_sn {} tx_nesn {} rx_sn {} rx_nesn {} state_at_entry {} state_before_ptr {} prepare_cycles {}",
-                tm.slot_now,
-                link.sn,
-                link.nesn,
-                ur_sn,
-                ur_nesn,
-                ack_state_at_entry,
-                ack_state_before_ptr,
-                ack_prepare_cycles.as_cycles()
-            );
-        }
-
-        #[cfg(feature = "defmt")]
-        if end.0 > 0 {
-            defmt::info!("acquire cycles: {}, us: {}", end.as_cycles(), end.as_us());
         }
 
         // sync stuff
@@ -928,14 +793,7 @@ impl YipPeripheral {
     }
 
     fn disabled_tx_ack(&mut self) {
-        let _events = self.device.radio.take_interrupt_events();
-
-        if self.slot.pkind == PacketKind::Empty {
-            debug!(
-                "empty ACK done: slot {} txready {} disabled {}",
-                self.timing.slot_now, _events.txready, _events.disabled
-            );
-        }
+        let _ = self.device.radio.take_interrupt_events();
 
         if self.timing.check_next_slot {
             self.prepare_next_rx();

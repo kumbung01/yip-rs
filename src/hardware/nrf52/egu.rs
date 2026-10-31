@@ -70,29 +70,29 @@ impl EguDriver for Nrf52Egu {
 
     fn enable_interrupt_regs(regs: &pac::egu::Egu, trigger: Trigger) {
         regs.intenset()
-            .write(|w| w.set_triggered(trigger as usize, true));
+            .write(|w| w.set_triggered(trigger.number(), true));
     }
 
     fn disable_interrupt_regs(regs: &pac::egu::Egu, trigger: Trigger) {
         regs.intenclr()
-            .write(|w| w.set_triggered(trigger as usize, true));
+            .write(|w| w.set_triggered(trigger.number(), true));
     }
 
     fn select_interrupt_regs(regs: &pac::egu::Egu, trigger: Trigger) {
         regs.inten()
-            .write(|w| w.set_triggered(trigger as usize, true));
+            .write(|w| w.set_triggered(trigger.number(), true));
     }
 
     fn clear_triggered_regs(regs: &pac::egu::Egu, trigger: Trigger) {
-        regs.events_triggered(trigger as usize).write_value(0);
+        regs.events_triggered(trigger.number()).write_value(0);
     }
 
     fn trigger_regs(regs: &pac::egu::Egu, trigger: Trigger) {
-        regs.tasks_trigger(trigger as usize).write_value(1);
+        regs.tasks_trigger(trigger.number()).write_value(1);
     }
 
     fn is_triggered_regs(regs: &pac::egu::Egu, trigger: Trigger) -> bool {
-        regs.events_triggered(trigger as usize).read() != 0
+        regs.events_triggered(trigger.number()).read() != 0
     }
 
     fn disable_interrupt(&mut self, trigger: Trigger) {
@@ -128,7 +128,7 @@ impl EguDriver for Nrf52Egu {
     }
 
     fn clear_all(&mut self) {
-        for trigger in Trigger::ALL {
+        for &trigger in Trigger::ALL {
             self.disable_interrupt(trigger);
             self.clear_triggered(trigger);
         }

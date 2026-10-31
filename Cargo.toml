@@ -45,6 +45,8 @@ nrf54lm20 = [
     "embassy-nrf/nrf54lm20-app-s",
     "embassy-nrf/time-driver-grtc",
 ]
+# nRF54LM20 peripheral: keep RRAM in standby while waiting for connected RX.
+reduce-rram-latency = []
 defmt = ["dep:defmt"]
 
 [profile.dev]

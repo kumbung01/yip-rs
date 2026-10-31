@@ -1,4 +1,6 @@
 use crate::hardware::api::{EguDriver, PpiDriver};
+#[cfg(feature = "defmt")]
+use crate::hardware::ppi_timing::PpiTiming;
 
 use embassy_nrf::{
     Peri,
@@ -116,9 +118,6 @@ impl PpiDriver for Nrf52Ppi {
     type Egu = Nrf52Egu;
 
     fn clear(&mut self) {
-        #[cfg(feature = "defmt")]
-        crate::hardware::clock::set_ack_timer(None);
-
         let ppi = embassy_nrf::pac::PPI;
 
         // 우선 채널을 모두 끈다.
@@ -134,7 +133,9 @@ impl PpiDriver for Nrf52Ppi {
 
     fn enable(&mut self) {
         // Completion stays disarmed until the scheduled TX actually starts.
-        pac::PPI.chenset().write_value(Chen(self.mask.0 & !self.completion_mask));
+        pac::PPI
+            .chenset()
+            .write_value(Chen(self.mask.0 & !self.completion_mask));
     }
 
     fn disable(&mut self) {
@@ -142,13 +143,17 @@ impl PpiDriver for Nrf52Ppi {
     }
 
     fn configure_central(&mut self, clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
+        #[cfg(feature = "defmt")]
+        let mut ppi_timing = PpiTiming::start();
         self.clear_all();
+        #[cfg(feature = "defmt")]
+        ppi_timing.mark_cleared();
         let ppi = pac::PPI;
         let radio = pac::RADIO;
         let timer = clock.timer.regs();
         let egu = _egu.regs();
 
-        let timeslot_end = Trigger::TimeslotEnd as usize;
+        let timeslot_end = Trigger::TimeslotEnd.number();
 
         let group_num = self.group.number();
         let task_group_enable = ppi.tasks_chg(group_num).en();
@@ -160,8 +165,8 @@ impl PpiDriver for Nrf52Ppi {
             .number();
         let completion_enable = ppi.tasks_chg(completion_num).en();
         let completion_disable = ppi.tasks_chg(completion_num).dis();
-        self.completion_mask = (1u32 << self.channels[2].number())
-            | (1u32 << self.channels[3].number());
+        self.completion_mask =
+            (1u32 << self.channels[2].number()) | (1u32 << self.channels[3].number());
         ppi.chg(completion_num).write(|w| {
             w.set_ch(self.channels[2].number(), true);
             w.set_ch(self.channels[3].number(), true);
@@ -214,6 +219,8 @@ impl PpiDriver for Nrf52Ppi {
 
         // A PPI channel has one fork; use a spare channel for the second group.
         self.connect(6, timer.events_compare(0), completion_enable, None);
+        #[cfg(feature = "defmt")]
+        ppi_timing.log("configure_central");
     }
 
     fn configure_sync(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
@@ -222,7 +229,11 @@ impl PpiDriver for Nrf52Ppi {
         let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
+        #[cfg(feature = "defmt")]
+        let mut ppi_timing = PpiTiming::start();
         self.clear();
+        #[cfg(feature = "defmt")]
+        ppi_timing.mark_cleared();
 
         // rtc.comp0 -> timer.en
         let mut channels = self.connect(0, rtc.events_compare(0), timer.tasks_start(), None);
@@ -240,27 +251,41 @@ impl PpiDriver for Nrf52Ppi {
         channels |= self.connect(
             4,
             radio.events_disabled(),
-            egu.tasks_trigger(Trigger::TimeslotEnd as usize),
+            egu.tasks_trigger(Trigger::TimeslotEnd.number()),
             Some(timer.tasks_shutdown()),
         );
 
         self.enable_channels(channels);
+        #[cfg(feature = "defmt")]
+        ppi_timing.log("configure_sync");
+    }
+
+    fn configure_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
+        // nRF52 still installs its routes per phase. Leave sync disarmed
+        // before the role schedules its first connected receive window.
+        self.clear();
     }
 
     fn configure_peripheral_prepare_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
         let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
+        #[cfg(feature = "defmt")]
+        let mut ppi_timing = PpiTiming::start();
         self.clear();
+        #[cfg(feature = "defmt")]
+        ppi_timing.mark_cleared();
 
         let channels = self.connect(
             0,
             rtc.events_compare(0),
-            egu.tasks_trigger(Trigger::Start as usize),
+            egu.tasks_trigger(Trigger::Start.number()),
             None,
         );
 
         self.enable_channels(channels);
+        #[cfg(feature = "defmt")]
+        ppi_timing.log("configure_peripheral_prepare_rx");
     }
 
     fn configure_peripheral_next_rx(&mut self, _clock: &mut Nrf52Clock, _egu: &mut Nrf52Egu) {
@@ -270,13 +295,17 @@ impl PpiDriver for Nrf52Ppi {
         let rtc = _clock.rtc.regs();
         let egu = _egu.regs();
 
-        let timeslot_end = Trigger::TimeslotEnd as usize;
+        let timeslot_end = Trigger::TimeslotEnd.number();
 
         let group_num = self.group.number();
         let task_group_enable = ppi.tasks_chg(group_num).en();
         let task_group_disable = ppi.tasks_chg(group_num).dis();
 
+        #[cfg(feature = "defmt")]
+        let mut ppi_timing = PpiTiming::start();
         self.clear();
+        #[cfg(feature = "defmt")]
+        ppi_timing.mark_cleared();
 
         // RX starts automatically; ACK TX waits in TXIDLE until its buffer
         // and completion route have been installed.
@@ -285,16 +314,6 @@ impl PpiDriver for Nrf52Ppi {
             w.set_txready_start(false);
             w.set_rxready_start(true);
         });
-
-        #[cfg(feature = "defmt")]
-        {
-            // Keep counting until ACK setup so sleep/wakeup time is measured.
-            timer.shorts().modify(|w| {
-                w.set_compare_stop(1, false);
-                w.set_compare_clear(1, false);
-            });
-            crate::hardware::clock::set_ack_timer(Some(timer));
-        }
 
         // rtc.comp0 -> (timer.start, group.en)
         let mut channels = self.connect(
@@ -318,7 +337,6 @@ impl PpiDriver for Nrf52Ppi {
             egu.tasks_trigger(timeslot_end),
             Some(task_group_disable),
         );
-        #[cfg(feature = "defmt")]
         self.include_group(3);
         channels |= self.connect(
             4,
@@ -332,9 +350,6 @@ impl PpiDriver for Nrf52Ppi {
             5,
             radio.events_crcok(),
             egu.tasks_trigger(timeslot_end),
-            #[cfg(feature = "defmt")]
-            Some(timer.tasks_capture(3)),
-            #[cfg(not(feature = "defmt"))]
             None,
         );
 
@@ -343,9 +358,6 @@ impl PpiDriver for Nrf52Ppi {
             6,
             egu.events_triggered(timeslot_end),
             radio.tasks_disable(),
-            #[cfg(feature = "defmt")]
-            None,
-            #[cfg(not(feature = "defmt"))]
             Some(timer.tasks_shutdown()),
         );
 
@@ -359,18 +371,24 @@ impl PpiDriver for Nrf52Ppi {
         self.include_group(7);
 
         self.enable_channels(channels);
+        #[cfg(feature = "defmt")]
+        ppi_timing.log("configure_peripheral_next_rx");
     }
 
     fn configure_peripheral_tx_ack(&mut self, _egu: &mut Nrf52Egu) {
         let radio = pac::RADIO;
         let egu = _egu.regs();
 
+        #[cfg(feature = "defmt")]
+        let mut ppi_timing = PpiTiming::start();
         self.clear();
+        #[cfg(feature = "defmt")]
+        ppi_timing.mark_cleared();
 
         let completion = self.connect(
             0,
             radio.events_disabled(),
-            egu.tasks_trigger(Trigger::TimeslotEnd as usize),
+            egu.tasks_trigger(Trigger::TimeslotEnd.number()),
             None,
         );
 
@@ -401,5 +419,7 @@ impl PpiDriver for Nrf52Ppi {
         if radio.state().read().state() == pac::radio::vals::State::TxIdle {
             egu.tasks_trigger(ACK_START).write_value(1);
         }
+        #[cfg(feature = "defmt")]
+        ppi_timing.log("configure_peripheral_tx_ack");
     }
 }

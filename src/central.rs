@@ -56,7 +56,7 @@ impl Slot {
 
 pub fn init<const W: usize>(device: DeviceContext<YipInterruptHandler>) -> [YipSession; W] {
     #[cfg(feature = "defmt")]
-    crate::hardware::cyccnt::init();
+    crate::hardware::ppi_timing::init();
 
     let irq = device.egu.irq();
 

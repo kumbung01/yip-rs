@@ -229,6 +229,13 @@ impl ClockDriver for Nrf54Clock {
         self.grtc.disable();
         self.timer.stop();
         self.timer.clear();
+        // CC1 owns peripheral timeout cleanup, independent of DPPI gating.
+        // Early CRC completion may leave TIMER running until CC1 or the next
+        // receive-window setup, which also stops and clears it explicitly.
+        self.timer.regs().shorts().modify(|w| {
+            w.set_compare_stop(1, true);
+            w.set_compare_clear(1, true);
+        });
         self.ts.us = Instant::now().as_micros();
     }
 

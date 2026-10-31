@@ -9,30 +9,6 @@ use embassy_nrf::{
 use crate::config::*;
 use crate::pdu::*;
 
-// Connected RX diagnostics use CC3 for CRCOK and reuse CC0 after RXEN has
-// already fired. TIMER0..2 only have four CC registers, so do not assume CC5.
-#[cfg(feature = "defmt")]
-static ACK_TIMER: core::sync::atomic::AtomicPtr<()> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-#[cfg(feature = "defmt")]
-pub(crate) fn set_ack_timer(timer: Option<embassy_nrf::pac::timer::Timer>) {
-    ACK_TIMER.store(
-        timer.map_or(core::ptr::null_mut(), |timer| timer.as_ptr()),
-        core::sync::atomic::Ordering::Relaxed,
-    );
-}
-
-#[cfg(feature = "defmt")]
-pub(crate) fn capture_ack_irq() {
-    let ptr = ACK_TIMER.load(core::sync::atomic::Ordering::Relaxed);
-    if !ptr.is_null() {
-        // SAFETY: registered only while the owned TIMER is in connected RX.
-        let timer = unsafe { embassy_nrf::pac::timer::Timer::from_ptr(ptr) };
-        timer.tasks_capture(0).write_value(1);
-    }
-}
-
 #[derive(Debug, PartialEq, PartialOrd, Clone, Copy, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) struct Timestamp {
@@ -199,8 +175,7 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn set_next_sync(&mut self) -> (u32, u32) {
-        // Diagnostic RX keeps TIMER running through completion, including
-        // failures. Every RTC-triggered window needs a fresh relative counter.
+        // Every RTC-triggered window needs a fresh relative counter.
         self.timer.stop();
         self.timer.clear();
 
@@ -266,8 +241,7 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
-        // A failed RX never reaches ACK setup (which normally clears TIMER).
-        // Reset before writing the next window's small relative CC values.
+        // Reset before writing the next window's relative CC values.
         self.timer.stop();
         self.timer.clear();
 

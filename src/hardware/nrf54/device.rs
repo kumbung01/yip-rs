@@ -34,7 +34,7 @@ impl<H> DeviceContext<H> {
         radio_channels: [Channel<'static, RadioDomain>; RADIO_CHANNEL_COUNT],
         peri_channels: [Channel<'static, PeriDomain>; 1],
         bridge: (Peri<'static, B>, Peri<'static, B::Paired>),
-        groups: [PpiGroup<'static, RadioDomain>; 2],
+        groups: [PpiGroup<'static, RadioDomain>; 4],
         _irq: impl Binding<EGU10, H>,
         seed: u32,
     ) -> Self

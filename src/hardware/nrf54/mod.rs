@@ -1,8 +1,6 @@
 //! nRF54LM20 central/peripheral backend using GRTC, TIMER10 and DPPI/PPIB.
 
 pub(crate) mod clock;
-#[cfg(feature = "defmt")]
-pub mod cyccnt;
 pub(crate) mod device;
 pub(crate) mod egu;
 pub(crate) mod ppi;
