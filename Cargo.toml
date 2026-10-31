@@ -11,6 +11,7 @@ required-features = ["nrf52840", "defmt"]
 yip-macros = { path = "yip-macros" }
 cortex-m = "0.7"
 defmt = { version = "1", optional = true }
+log = { version = "0.4", optional = true }
 
 embassy-time = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
 embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", branch = "main" }
@@ -48,6 +49,7 @@ nrf54lm20 = [
 # nRF54LM20 peripheral: keep RRAM in standby while waiting for connected RX.
 reduce-rram-latency = []
 defmt = ["dep:defmt"]
+log = ["dep:log"]
 
 [profile.dev]
 opt-level = 2

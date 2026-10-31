@@ -21,8 +21,8 @@ pub(crate) const YIP_SLOTSIZE_US: u64 = 500;
 pub(crate) const YIP_PACKET_SIZE: usize = 251;
 pub(crate) const YIP_SUB_PACKET_SIZE: usize = 20;
 pub(crate) const CHANNELS: u32 = 39; // 39 channels
-// pub(crate) const DRIFT_LIMIT_US: u32 = 30;
-pub(crate) const DRIFT_LIMIT_US: u32 = 50;
+// 250 us over the 500 ms heartbeat interval corresponds to 500 ppm.
+pub(crate) const DRIFT_LIMIT_US: u32 = 250;
 
 // timeslot constants
 pub(crate) const ISR_MARGIN_US: u32 = 20;
@@ -31,7 +31,7 @@ pub(crate) const PERIPHEARL_SYNC_DURATION_US: u32 = 750_000;
 pub(crate) const PERIPHERAL_SYNC_TIMETOUT_US: u32 = 250_000;
 
 pub(crate) const TIMEOUT_MARGIN_US: u32 = 20;
-pub(crate) const TIMESLOT_MARGIN_US: u32 = 5;
+pub(crate) const TIMESLOT_MARGIN_US: u32 = 20;
 pub(crate) const RX_WINDOW_MARGIN_US: u32 = 20;
 
 pub(crate) const TIMEOUT_LIMIT_US_CENTRAL: u32 = 1000_000;
@@ -233,6 +233,8 @@ macro_rules! debug {
     ($($arg:tt)*) => {
         #[cfg(feature = "defmt")]
         defmt::debug!($($arg)*);
+        #[cfg(feature = "log")]
+        log::debug!($($arg)*);
     };
 }
 
@@ -240,5 +242,16 @@ macro_rules! error {
     ($($arg:tt)*) => {
         #[cfg(feature = "defmt")]
         defmt::error!($($arg)*);
+        #[cfg(feature = "log")]
+        log::error!($($arg)*);
+    };
+}
+
+macro_rules! info {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "defmt")]
+        defmt::info!($($arg)*);
+        #[cfg(feature = "log")]
+        log::info!($($arg)*);
     };
 }

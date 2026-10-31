@@ -20,8 +20,9 @@
     "rust-analyzer": {
       "initialization_options": {
         // "linkedProjects": ["firmware/central/Cargo.toml"],
+        "linkedProjects": ["firmware/nrf52-central/Cargo.toml"],
         // "linkedProjects": ["firmware/peripheral/Cargo.toml"],
-        "linkedProjects": ["firmware/nrf54-peripheral/Cargo.toml"],
+        // "linkedProjects": ["firmware/nrf54-peripheral/Cargo.toml"],
         "check": {
           "allTargets": false
         }

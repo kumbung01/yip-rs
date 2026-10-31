@@ -4,11 +4,11 @@ use crate::config::UpdateResult;
 pub(crate) trait ClockDriver {
     type Timestamp: ClockTimestamp;
     type Timing;
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     type PeripheralInstant;
 
     fn get_start_ts(&self) -> Self::Timestamp;
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn get_start_hw(&mut self) -> Self::Timestamp;
     fn start_central(&mut self);
     fn stop_central(&mut self);
@@ -17,7 +17,7 @@ pub(crate) trait ClockDriver {
 
     fn start_peripheral(&mut self);
     fn stop_peripheral(&mut self);
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn get_now_peripheral(&self) -> Self::PeripheralInstant;
     fn set_next_sync(&mut self) -> (u32, u32);
     fn set_next_pre_slot(&mut self, tm: &Self::Timing);
@@ -29,7 +29,7 @@ pub(crate) trait ClockDriver {
 
 /// Chip-specific timestamp conversion used by role diagnostics.
 pub(crate) trait ClockTimestamp: Sized {
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn unscaled(&self) -> Self;
 }
 

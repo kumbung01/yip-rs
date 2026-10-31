@@ -228,7 +228,7 @@ where
         self.packet.len as usize
     }
 
-    // #[cfg(feature = "defmt")]
+    // #[cfg(any(feature = "defmt", feature = "log"))]
     // pub(crate) fn copied(&self) -> usize {
     // self.copied
     // }

@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub(crate) enum Trigger {
     TimeslotEnd,
@@ -15,7 +15,7 @@ macro_rules! state_triggers {
     ($($state:ident { $($name:ident = $number:literal),+ $(,)? })+) => {
         $(
             #[cfg(feature = "nrf54lm20")]
-            #[derive(Clone, Copy, Eq, PartialEq)]
+            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
             #[repr(usize)]
             #[cfg_attr(feature = "defmt", derive(defmt::Format))]
             pub(crate) enum $state { $($name = $number),+ }

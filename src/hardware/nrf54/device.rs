@@ -48,8 +48,8 @@ impl<H> DeviceContext<H> {
             ..SlotContext::default()
         };
 
-        #[cfg(feature = "defmt")]
-        defmt::debug!("seed: {}", seed);
+        #[cfg(any(feature = "defmt", feature = "log"))]
+        debug!("seed: {}", seed);
 
         // we set egu register here for triggering from session.
         let egu = Nrf54Egu::new();

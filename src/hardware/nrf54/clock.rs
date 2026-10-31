@@ -86,7 +86,7 @@ pub(crate) struct Timestamp {
 }
 
 impl ClockTimestamp for Timestamp {
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn unscaled(&self) -> Timestamp {
         Timestamp { us: self.us }
     }
@@ -154,14 +154,14 @@ impl Timing {
 impl ClockDriver for Nrf54Clock {
     type Timestamp = Timestamp;
     type Timing = Timing;
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     type PeripheralInstant = u64;
 
     fn get_start_ts(&self) -> Timestamp {
         self.ts
     }
 
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn get_start_hw(&mut self) -> Timestamp {
         Timestamp {
             us: embassy_nrf::pac::GRTC.cc(self.grtc.number).ccl().read() as u64
@@ -252,7 +252,7 @@ impl ClockDriver for Nrf54Clock {
         self.timer.clear();
     }
 
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn get_now_peripheral(&self) -> u64 {
         Instant::now().as_micros()
     }

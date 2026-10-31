@@ -144,8 +144,8 @@ impl RadioDriver for Nrf52Radio {
         self.set_short();
         self.set_radio_rampup_mode();
 
-        #[cfg(feature = "defmt")]
-        defmt::debug!("radio setup complete");
+        #[cfg(any(feature = "defmt", feature = "log"))]
+        debug!("radio setup complete");
     }
 
     unsafe fn set_packetptr(&mut self, packet: *mut u8) {

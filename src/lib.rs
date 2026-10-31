@@ -1,6 +1,9 @@
 #![no_main]
 #![no_std]
 
+#[cfg(all(feature = "defmt", feature = "log"))]
+compile_error!("YIP logging features defmt and log are mutually exclusive");
+
 use crate::hardware::api::EguDriver;
 #[macro_use]
 mod config;
@@ -42,13 +45,13 @@ pub(crate) fn register_egu(regs: pac::egu::Egu) {
 }
 
 pub(crate) fn enable_start() {
-    debug!("enabled interrupt {}", &Trigger::Start);
+    debug!("enabled interrupt {:?}", &Trigger::Start);
     let outer_egu = OUTER_EGU.try_get().expect("outer egu not initialized");
     Egu::enable_interrupt_regs(outer_egu, Trigger::Start);
 }
 
 pub(crate) fn trigger_start() {
-    debug!("triggered interrupt {}", &Trigger::Start);
+    debug!("triggered interrupt {:?}", &Trigger::Start);
     let outer_egu = OUTER_EGU.try_get().expect("outer egu not initialized");
     Egu::trigger_regs(outer_egu, Trigger::Start);
 }

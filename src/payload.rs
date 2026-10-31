@@ -4,8 +4,34 @@ pub use yip_macros::Payload;
 /// Encoding requires at least SIZE destination bytes; decoding requires exactly SIZE.
 pub trait Payload: Sized {
     const SIZE: usize;
-    fn encode(self, dst: &mut [u8]);
-    fn decode(src: &[u8]) -> Result<Self, ()>;
+    #[inline(always)]
+    fn encode(self, dst: &mut [u8]) {
+        assert!(dst.len() >= Self::SIZE, "payload destination too short");
+        // SAFETY: The complete encoded payload fits in the destination.
+        unsafe { self.encode_unchecked(dst.as_mut_ptr()) };
+    }
+
+    /// Writes exactly SIZE bytes in wire format without checking the destination.
+    ///
+    /// # Safety
+    /// `dst` must be valid for writing SIZE bytes. No alignment is required.
+    unsafe fn encode_unchecked(self, dst: *mut u8);
+
+    #[inline(always)]
+    fn decode(src: &[u8]) -> Result<Self, ()> {
+        if src.len() != Self::SIZE {
+            return Err(());
+        }
+        // SAFETY: The complete wire payload is present and initialized.
+        unsafe { Self::decode_unchecked(src.as_ptr()) }
+    }
+
+    /// Reads SIZE bytes without checking the input length, while validating field values.
+    ///
+    /// # Safety
+    /// `src` must be valid for reading SIZE initialized bytes. No alignment is required.
+    /// Implementations must reject invalid enum discriminants rather than construct them.
+    unsafe fn decode_unchecked(src: *const u8) -> Result<Self, ()>;
 }
 
 pub trait Header: Payload {}
@@ -14,11 +40,15 @@ macro_rules! integer_payload {
     ($($ty:ty),* $(,)?) => {$(
         impl Payload for $ty {
             const SIZE: usize = core::mem::size_of::<Self>();
-            fn encode(self, dst: &mut [u8]) {
-                dst[..Self::SIZE].copy_from_slice(&self.to_le_bytes());
+            #[inline(always)]
+            unsafe fn encode_unchecked(self, dst: *mut u8) {
+                // SAFETY: The caller supplies space for this integer; unaligned writes are supported.
+                unsafe { dst.cast::<Self>().write_unaligned(self.to_le()) };
             }
-            fn decode(src: &[u8]) -> Result<Self, ()> {
-                Ok(Self::from_le_bytes(src.try_into().map_err(|_| ())?))
+            #[inline(always)]
+            unsafe fn decode_unchecked(src: *const u8) -> Result<Self, ()> {
+                // SAFETY: Every bit pattern is valid for an integer; the caller supplies SIZE bytes.
+                Ok(Self::from_le(unsafe { src.cast::<Self>().read_unaligned() }))
             }
         }
     )*};
@@ -29,11 +59,15 @@ integer_payload!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 
 impl<const N: usize> Payload for [u8; N] {
     const SIZE: usize = N;
-    fn encode(self, dst: &mut [u8]) {
-        dst[..N].copy_from_slice(&self);
+    #[inline(always)]
+    unsafe fn encode_unchecked(self, dst: *mut u8) {
+        // SAFETY: The caller supplies N writable bytes, separate from this owned array.
+        unsafe { core::ptr::copy_nonoverlapping(self.as_ptr(), dst, N) };
     }
-    fn decode(src: &[u8]) -> Result<Self, ()> {
-        src.try_into().map_err(|_| ())
+    #[inline(always)]
+    unsafe fn decode_unchecked(src: *const u8) -> Result<Self, ()> {
+        // SAFETY: Every byte pattern is valid; the caller supplies N initialized bytes.
+        Ok(unsafe { src.cast::<Self>().read_unaligned() })
     }
 }
 

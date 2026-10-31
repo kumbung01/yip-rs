@@ -17,7 +17,7 @@ pub(crate) struct Timestamp {
 }
 
 impl ClockTimestamp for Timestamp {
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn unscaled(&self) -> Timestamp {
         Timestamp {
             rtc: self.rtc,
@@ -30,6 +30,8 @@ pub(crate) struct Nrf52Clock {
     pub(crate) rtc: Rtc<'static>,
     pub(crate) timer: Timer<'static>,
     ts: Timestamp,
+    #[cfg(any(feature = "defmt", feature = "log"))]
+    pub(crate) rtc_ratio_ticks: Option<u32>,
 }
 
 impl Nrf52Clock {
@@ -51,6 +53,8 @@ impl Nrf52Clock {
             rtc,
             timer,
             ts: Timestamp::default(),
+            #[cfg(any(feature = "defmt", feature = "log"))]
+            rtc_ratio_ticks: None,
         }
     }
 }
@@ -83,14 +87,14 @@ fn unscale_timer(cc: u32) -> u32 {
 impl ClockDriver for Nrf52Clock {
     type Timestamp = Timestamp;
     type Timing = Timing;
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     type PeripheralInstant = u32;
 
     fn get_start_ts(&self) -> Timestamp {
         self.ts
     }
 
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn get_start_hw(&mut self) -> Timestamp {
         Timestamp {
             rtc: self.rtc.regs().cc(0).read().0,
@@ -117,6 +121,9 @@ impl ClockDriver for Nrf52Clock {
         let tx_start = ts.wrapping_add((slot_diff).wrapping_mul(YIP_SLOTSIZE_US as u32));
 
         self.ts.timer = tx_start;
+        // Diagnostic event flags must belong to this reservation, not the previous TX.
+        #[cfg(any(feature = "defmt", feature = "log"))]
+        self.timer.regs().events_compare(0).write_value(0);
         self.timer.cc(0).write(tx_start);
 
         slot_diff
@@ -169,7 +176,7 @@ impl ClockDriver for Nrf52Clock {
         self.timer.clear();
     }
 
-    #[cfg(feature = "defmt")]
+    #[cfg(any(feature = "defmt", feature = "log"))]
     fn get_now_peripheral(&self) -> u32 {
         self.rtc.read()
     }
@@ -331,6 +338,30 @@ impl ClockDriver for Nrf52Clock {
         let sync = self.read_sync() as i32 - ADDR_DELAY_TICKS as i32;
         let drift = sync - unscale_timer(self.ts.timer) as i32 - RX_WINDOW_MARGIN_US as i32;
         debug!("drift: {} us", drift);
+
+        #[cfg(any(feature = "defmt", feature = "log"))]
+        if tm.is_hb {
+            let clock = embassy_nrf::pac::CLOCK;
+            if let Some(ticks) = self.rtc_ratio_ticks {
+                // 16,384 ticks at 32,768 Hz should span 8,000,000 ticks at 16 MHz.
+                let error_ticks = ticks as i32 - 8_000_000;
+                debug!(
+                    "RTC/HF ratio: rtc_ticks 16384 timer_hz 16000000 measured {} expected 8000000 error_ns {} interval_error_ppm {}",
+                    ticks, error_ticks as i64 * 1_000 / 16, error_ticks / 8,
+                );
+            } else {
+                debug!("RTC/HF ratio: startup measurement timed out");
+            }
+            debug!(
+                "sync sample: addr_cc {} expected_addr_cc {} rx_cc {} lfclksrc {:#x} lfclkstat {:#x} hfclkstat {:#x}",
+                self.read_sync(),
+                unscale_timer(self.ts.timer) + RX_WINDOW_MARGIN_US + ADDR_DELAY_TICKS,
+                self.timer.cc(0).read(),
+                clock.lfclksrc().read().0,
+                clock.lfclkstat().read().0,
+                clock.hfclkstat().read().0,
+            );
+        }
 
         if !tm.is_hb {
             return UpdateResult::Skipped;

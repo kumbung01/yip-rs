@@ -33,15 +33,19 @@ fn expand_payload(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStre
                     .push(parse_quote!(#ty: crate::payload::Payload));
                 sizes.push(quote!(<#ty as crate::payload::Payload>::SIZE));
                 encoders.push(quote! {
-                    let end = offset + <#ty as crate::payload::Payload>::SIZE;
-                    <#ty as crate::payload::Payload>::encode(self.#member, &mut dst[offset..end]);
-                    offset = end;
+                    // SAFETY: The caller provides SIZE bytes, which is the sum of the field sizes.
+                    unsafe {
+                        <#ty as crate::payload::Payload>::encode_unchecked(self.#member, dst.add(offset));
+                    }
+                    offset += <#ty as crate::payload::Payload>::SIZE;
                 });
                 decoders.push(quote! {
                     #member: {
-                        let end = offset + <#ty as crate::payload::Payload>::SIZE;
-                        let value = <#ty as crate::payload::Payload>::decode(&src[offset..end])?;
-                        offset = end;
+                        // SAFETY: SIZE is the sum of field sizes and the caller provides that many bytes.
+                        let value = unsafe {
+                            <#ty as crate::payload::Payload>::decode_unchecked(src.add(offset))?
+                        };
+                        offset += <#ty as crate::payload::Payload>::SIZE;
                         value
                     }
                 });
@@ -85,9 +89,13 @@ fn expand_payload(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStre
             let variants = data.variants.iter().map(|v| &v.ident);
             (
                 quote!(1),
-                quote!(dst[0] = self as u8;),
                 quote! {
-                    match src[0] {
+                    // SAFETY: A repr(u8) payload requires exactly one writable byte.
+                    unsafe { dst.write(self as u8); }
+                },
+                quote! {
+                    // Read a byte first; never transmute unvalidated input into an enum.
+                    match unsafe { src.read() } {
                         #(value if value == Self::#variants as u8 => Ok(Self::#variants),)*
                         _ => Err(()),
                     }
@@ -106,15 +114,13 @@ fn expand_payload(input: syn::DeriveInput) -> syn::Result<proc_macro2::TokenStre
         impl #impl_generics crate::payload::Payload for #name #ty_generics #where_clause {
             const SIZE: usize = #size;
 
-            fn encode(self, dst: &mut [u8]) {
-                let dst = &mut dst[..<Self as crate::payload::Payload>::SIZE];
+            #[inline(always)]
+            unsafe fn encode_unchecked(self, dst: *mut u8) {
                 #encode
             }
 
-            fn decode(src: &[u8]) -> Result<Self, ()> {
-                if src.len() != <Self as crate::payload::Payload>::SIZE {
-                    return Err(());
-                }
+            #[inline(always)]
+            unsafe fn decode_unchecked(src: *const u8) -> Result<Self, ()> {
                 #decode
             }
         }

@@ -1,4 +1,4 @@
-#[cfg(feature = "defmt")]
+#[cfg(any(feature = "defmt", feature = "log"))]
 use crate::hardware::api::ClockTimestamp;
 use crate::hardware::api::{ClockDriver, EguDriver, PpiDriver, RadioDriver};
 use core::cell::RefCell;
@@ -276,12 +276,12 @@ impl YipPeripheral {
         ppi.configure_sync(clock, egu);
         egu.select_interrupt(TimeslotEnd);
 
-        #[cfg(feature = "defmt")]
+        #[cfg(any(feature = "defmt", feature = "log"))]
         {
             let ts = clock.get_start_ts().unscaled();
             let cc = clock.get_start_hw();
             debug!(
-                "start ts {} cc {} timeout {} slot {} ch {}",
+                "start ts {:?} cc {:?} timeout {} slot {} ch {}",
                 ts, cc, _timeout, context.refslot, channel
             );
         }
@@ -311,7 +311,7 @@ impl YipPeripheral {
         let sync_packet = 'parse: {
             if !events.crc_ok || rxbuf.pdu1.packet_type() != PacketType::Control {
                 debug!(
-                    "crcok {}, ptype {}",
+                    "crcok {}, ptype {:?}",
                     events.crc_ok,
                     rxbuf.pdu1.packet_type()
                 );
@@ -380,7 +380,7 @@ impl YipPeripheral {
         self.slot.pkind = PacketKind::Empty;
 
         debug!(
-            "slotsize {} pipes {} hb_loops {} refslot {} hb {}",
+            "slotsize {} pipes {} hb_loops {} refslot {} hb {:?}",
             ctx.slot_ticks, ctx.pipes, tm.hb_loops, ctx.refslot, tm.hb
         );
 
@@ -452,12 +452,12 @@ impl YipPeripheral {
 
         self.timing.is_hb = loop_diff % self.timing.hb_loops == 0;
 
-        #[cfg(feature = "defmt")]
+        #[cfg(any(feature = "defmt", feature = "log"))]
         {
             let ts = clock.get_start_ts().unscaled();
             let cc = clock.get_start_hw();
             debug!(
-                "start ts {} cc {} timeout {} slot {} ch {} is_hb {}",
+                "start ts {:?} cc {:?} timeout {} slot {} ch {} is_hb {:?}",
                 ts, cc, _timeout, self.timing.slot_now, channel, self.timing.is_hb
             );
         }
@@ -559,7 +559,7 @@ impl YipPeripheral {
             return;
         };
 
-        #[cfg(feature = "defmt")]
+        #[cfg(any(feature = "defmt", feature = "log"))]
         let mut log_sync_after_ack = false;
         let rx_outcome: Option<(CurrentRx, &[u8])> = 'rx_retry: {
             if is_retransmit_payload {
@@ -580,7 +580,7 @@ impl YipPeripheral {
                         match command {
                             ControlCommand::Sync => {
                                 // noop, for now
-                                #[cfg(feature = "defmt")]
+                                #[cfg(any(feature = "defmt", feature = "log"))]
                                 {
                                     log_sync_after_ack = true;
                                 }
@@ -747,7 +747,7 @@ impl YipPeripheral {
 
         self.state = PeripheralState::TxAck;
 
-        #[cfg(feature = "defmt")]
+        #[cfg(any(feature = "defmt", feature = "log"))]
         if log_sync_after_ack {
             error!("peripheral should not send this");
         }

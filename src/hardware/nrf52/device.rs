@@ -57,8 +57,8 @@ impl<H> DeviceContext<H> {
             ..SlotContext::default()
         };
 
-        #[cfg(feature = "defmt")]
-        defmt::debug!("seed: {}", seed);
+        #[cfg(any(feature = "defmt", feature = "log"))]
+        debug!("seed: {}", seed);
 
         // we set egu register here for triggering from session.
         let egu = Nrf52Egu::new(egu);
@@ -67,14 +67,17 @@ impl<H> DeviceContext<H> {
         let mut radio = Nrf52Radio::new(radio);
         radio.init();
 
-        Self {
+        let mut device = Self {
             radio,
             clock: Nrf52Clock::new(rtc, timer),
             ppi: Nrf52Ppi::new(channels, group.into()),
             egu,
             context,
             _handler: PhantomData,
-        }
+        };
+        #[cfg(any(feature = "defmt", feature = "log"))]
+        device.ppi.measure_rtc_ratio(&mut device.clock);
+        device
     }
 }
 

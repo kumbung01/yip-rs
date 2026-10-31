@@ -103,6 +103,60 @@ impl Nrf52Ppi {
     fn enable_channels(&self, channels: u32) {
         pac::PPI.chenset().write_value(Chen(channels));
     }
+
+    /// One startup measurement, before any radio routes are installed.
+    #[cfg(any(feature = "defmt", feature = "log"))]
+    pub(crate) fn measure_rtc_ratio(&mut self, clock: &mut Nrf52Clock) {
+        use embassy_nrf::{rtc::{CompareChannel, Interrupt}, timer::Frequency};
+
+        self.clear_all();
+        clock.rtc.disable();
+        clock.timer.stop();
+        clock.timer.clear();
+        clock.timer.set_frequency(Frequency::F16MHz);
+        let rtc = clock.rtc.regs();
+        let timer = clock.timer.regs();
+        let start = crate::config::rtc_wrap(clock.rtc.read().wrapping_add(8));
+        let end = crate::config::rtc_wrap(start.wrapping_add(16_384));
+        clock.rtc.set_compare(CompareChannel::_1, start).expect("valid RTC compare");
+        clock.rtc.set_compare(CompareChannel::_2, end).expect("valid RTC compare");
+        rtc.events_compare(1).write_value(0);
+        rtc.events_compare(2).write_value(0);
+        timer.cc(2).write_value(0);
+        timer.cc(3).write_value(0);
+        clock.rtc.enable_event(Interrupt::Compare1);
+        clock.rtc.enable_event(Interrupt::Compare2);
+        let channels = self.connect(0, rtc.events_compare(1), timer.tasks_capture(2), None)
+            | self.connect(1, rtc.events_compare(2), timer.tasks_capture(3), None);
+        self.enable_channels(channels);
+        clock.timer.start();
+        clock.rtc.enable();
+
+        // Captures are hardware driven. A one-second HF deadline also detects a missing LF clock.
+        let measured = loop {
+            let last = timer.cc(3).read();
+            if last != 0 {
+                break Some(last.wrapping_sub(timer.cc(2).read()));
+            }
+            timer.tasks_capture(0).write_value(1);
+            if timer.cc(0).read() >= 16_000_000 {
+                break None;
+            }
+            core::hint::spin_loop();
+        };
+
+        self.clear_all();
+        clock.rtc.disable_event(Interrupt::Compare1);
+        clock.rtc.disable_event(Interrupt::Compare2);
+        clock.rtc.disable();
+        rtc.events_compare(1).write_value(0);
+        rtc.events_compare(2).write_value(0);
+        rtc.tasks_clear().write_value(1);
+        clock.timer.stop();
+        clock.timer.clear();
+        clock.timer.set_frequency(crate::config::TIMER_FREQUENCY);
+        clock.rtc_ratio_ticks = measured;
+    }
 }
 
 impl Drop for Nrf52Ppi {
