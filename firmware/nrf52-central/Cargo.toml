@@ -2,9 +2,18 @@
 name = "yip-nrf52-central"
 version = "0.1.0"
 edition = "2024"
+default-run = "yip-nrf52-central"
 
 # Keep each firmware's dependency features and build output independent.
 [workspace]
+
+[features]
+slot-test = []
+
+[[bin]]
+name = "slot-test"
+path = "src/bin/slot-test.rs"
+required-features = ["slot-test"]
 
 [dependencies]
 yip = { path = "../..", default-features = false, features = ["nrf52840", "defmt"] }

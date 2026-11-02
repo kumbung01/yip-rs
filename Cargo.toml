@@ -47,6 +47,7 @@ default = ["nrf52840"]
 
 nrf52840 = ["embassy-nrf/nrf52840"]
 nrf54lm20 = [
+    "reduce-rram-latency",
     "embassy-nrf/nrf54lm20-app-s",
     "embassy-nrf/time-driver-grtc",
 ]

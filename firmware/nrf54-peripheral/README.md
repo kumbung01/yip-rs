@@ -20,10 +20,9 @@ already-ready fallback. It does not busy-wait for TX ramp-up.
 `PERIPHERAL_ID` is 1 for the second peripheral on the two-link central.
 Change `SEND_INTERVAL` to adjust the periodic send interval.
 
-The YIP dependency enables `reduce-rram-latency`: RRAM stays in Standby from
-connected RX scheduling until RX completion, then returns to PowerOff. Stop
-also restores PowerOff. Remove the feature from `Cargo.toml` to leave RRAMC
-power settings unchanged. This option works with or without `defmt`.
+The `nrf54lm20` feature enables `reduce-rram-latency`. RRAM stays in Standby
+from connected RX scheduling until RX completion, then returns to PowerOff.
+Stopping the peripheral also restores PowerOff.
 
 From the repository root:
 

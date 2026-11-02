@@ -19,17 +19,14 @@ The cache is a CPU-wide resource; this lifecycle applies globally.
 
 ## RRAM latency feature
 
-Enable YIP's optional `reduce-rram-latency` feature together with `nrf54lm20`
-to reduce the peripheral's connected RX interrupt wake-up latency. Before
+Selecting `nrf54lm20` enables `reduce-rram-latency` to reduce the
+peripheral's connected RX interrupt wake-up latency. Before
 arming RX, it sets `RRAMC.POWER.LOWPOWERCONFIG.MODE` to Standby and triggers
 RRAM wake-up. RX completion (including failures) and peripheral stop set the
 mode back to PowerOff. This behavior does not depend on `defmt`.
 
-The feature is disabled by default and has no effect on other chip backends or
-the central role. With it disabled, YIP does not modify RRAMC power settings.
 Standby increases idle power while an RX window is scheduled. This changes
 global RRAMC settings, so applications sharing RRAMC must coordinate this policy.
-The `firmware/nrf54-peripheral` package enables the feature explicitly.
 
 ## Resources
 
