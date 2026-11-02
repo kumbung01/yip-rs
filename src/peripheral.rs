@@ -617,7 +617,7 @@ impl YipPeripheral {
 
             let mut tx_body = txbuf.write_header::<Self>(up_header);
 
-            let (ptype, more) = if let Some(packet) = link.current_tx.as_mut() {
+            let (ptype, more_data) = if let Some(packet) = link.current_tx.as_mut() {
                 tx_body.write_bytes(packet.get_fragment(tx_body.free_size()));
 
                 self.slot.pkind = PacketKind::Data;
@@ -643,12 +643,10 @@ impl YipPeripheral {
             };
 
             txbuf.pdu1.set_packet_type(ptype);
-            txbuf.pdu1.set_md(more);
-            tm.check_next_slot = (tx_failed && tm.check_next_slot) // resume previous pending state
-                || more
-                ||rx_md
-                || tm.is_hb;
+            txbuf.pdu1.set_md(more_data);
         }
+        // The next poll acknowledges this data even when the TX queue is now empty.
+        tm.check_next_slot = self.slot.pkind == PacketKind::Data || tx_failed || rx_md || tm.is_hb;
 
         if self.slot.tx_power.update(header.rssi) {
             radio.set_tx_power(self.slot.tx_power.get());
