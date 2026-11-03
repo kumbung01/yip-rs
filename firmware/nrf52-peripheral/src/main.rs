@@ -1,8 +1,7 @@
 #![no_std]
 #![no_main]
 use defmt_rtt as _;
-use embassy_futures::select::{Either4, select4};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_futures::select::{Either3, Either4, select3, select4};
 
 use embassy_nrf::bind_interrupts;
 use embassy_nrf::gpio::{Input, Pull};
@@ -17,7 +16,6 @@ use embassy_executor::Spawner;
 
 use yip::peripheral::YipInterruptHandler;
 const PERIPHERAL_ID: u8 = 0;
-const SEND_INTERVAL: Duration = Duration::from_secs(3);
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -71,8 +69,6 @@ async fn session_task(session: YipSession) {
 
     let pressed = COUNTS.receive().await;
     yip::peripheral::start();
-    let mut next_send = Instant::now() + SEND_INTERVAL;
-    let mut next_value = 1u32;
     let mut connected = false;
     let mut pending_button = Some(pressed);
 
@@ -85,26 +81,18 @@ async fn session_task(session: YipSession) {
             }
         };
 
-        match select4(
-            COUNTS.receive(),
-            connection_changed,
-            rx.read(),
-            Timer::at(next_send),
-        )
-        .await
-        {
-            Either4::First(pressed) => {
+        match select3(COUNTS.receive(), connection_changed, rx.read()).await {
+            Either3::First(pressed) => {
                 if connected {
                     stats.send(&mut tx, pressed);
                 } else {
                     pending_button = Some(pressed);
                 }
             }
-            Either4::Second(()) => {
+            Either3::Second(()) => {
                 connected = !connected;
                 if connected {
                     defmt::info!("session connected");
-                    next_send = Instant::now() + SEND_INTERVAL;
                     if let Some(pressed) = pending_button.take() {
                         stats.send(&mut tx, pressed);
                     }
@@ -112,7 +100,7 @@ async fn session_task(session: YipSession) {
                     defmt::info!("session disconnected");
                 }
             }
-            Either4::Third(_packet) => {
+            Either3::Third(_packet) => {
                 stats.rx_packets += 1;
                 // match core::str::from_utf8(_packet.as_slice()) {
                 // Ok(text) => defmt::info!("data: {}", text),
@@ -125,13 +113,6 @@ async fn session_task(session: YipSession) {
                 // stats.tx_attempts - stats.tx_queued,
                 // stats.rx_packets,
                 // );
-            }
-            Either4::Fourth(()) => {
-                next_send = Instant::now() + SEND_INTERVAL;
-                if connected {
-                    stats.send(&mut tx, next_value);
-                    next_value = next_value % 4 + 1;
-                }
             }
         }
     }

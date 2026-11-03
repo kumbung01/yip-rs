@@ -80,6 +80,7 @@ impl Slot {
 
 pub struct YipPeripheral {
     timing: Timing,
+    idle_heartbeats: u8,
     state: PeripheralState,
     slot: Slot,
     rxbuf: PacketBuffer,
@@ -119,7 +120,8 @@ pub fn stop() {
     });
 }
 
-pub fn init(device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
+pub fn init(mut device: DeviceContext<YipInterruptHandler>, id: u8) -> YipSession {
+    device.clock.calibrate_hfclk();
     let irq = device.egu.irq();
 
     let mut role = YipPeripheral::new(device, id);
@@ -168,6 +170,7 @@ impl YipPeripheral {
         ppi.clear();
         clock.stop_peripheral();
         radio.disable();
+        clock.stop_hfclk();
         egu.clear_all();
 
         self.slot.reset();
@@ -209,7 +212,7 @@ impl YipPeripheral {
         if let Some(trigger) = self.device.egu.get_and_clear_triggered() {
             use PeripheralState::*;
             match (self.state, trigger) {
-                (Idle, Start) => self.sync_start(),
+                (Idle, Start) => self.start(),
                 (Syncing, TimeslotEnd) => self.sync_disabled(),
                 (RxReady, Start) => self.prepare_next_rx(),
                 (Rx, TimeslotEnd) => self.disabled_rx(),
@@ -224,6 +227,7 @@ impl YipPeripheral {
     pub(crate) fn new(device: DeviceContext<YipInterruptHandler>, id: u8) -> Self {
         Self {
             timing: Timing::default(),
+            idle_heartbeats: 0,
             state: PeripheralState::Idle,
             id: id,
             device,
@@ -247,6 +251,7 @@ impl YipPeripheral {
     }
 
     fn sync_start(&mut self) {
+        self.idle_heartbeats = 0;
         let immediate = self.state == PeripheralState::Idle;
         let DeviceContext {
             radio,
@@ -374,6 +379,9 @@ impl YipPeripheral {
 
         self.state = PeripheralState::RxReady;
 
+        if self.idle_heartbeats >= 2 {
+            clock.stop_hfclk();
+        }
         clock.set_next_pre_slot(&self.timing);
 
         ppi.configure_peripheral_prepare_rx(clock, egu);
@@ -453,6 +461,7 @@ impl YipPeripheral {
         // Both backends keep TX in TXIDLE until ACK setup. TXREADY may
         // legitimately precede this handler and is not an RX failure.
         if rx_failed {
+            self.idle_heartbeats = 0;
             // do some timeout handle here
 
             // we must check next slot
@@ -483,6 +492,7 @@ impl YipPeripheral {
         let is_retransmit_payload = my_nesn != ur_sn;
 
         let Ok((header, body)) = rxbuf.read_header::<Self>() else {
+            self.idle_heartbeats = 0;
             tm.check_next_slot = true;
 
             if retry.is_timeout(tm.slot_now) {
@@ -646,7 +656,15 @@ impl YipPeripheral {
             txbuf.pdu1.set_md(more_data);
         }
         // The next poll acknowledges this data even when the TX queue is now empty.
-        tm.check_next_slot = self.slot.pkind == PacketKind::Data || tx_failed || rx_md || tm.is_hb;
+        let needs_poll = self.slot.pkind == PacketKind::Data || tx_failed || rx_md;
+        tm.check_next_slot = needs_poll || tm.is_hb;
+
+        let empty_rx = rx_packet_type == PacketType::Start && body.as_slice().first() == Some(&0);
+        if needs_poll || !empty_rx {
+            self.idle_heartbeats = 0;
+        } else if tm.is_hb {
+            self.idle_heartbeats = self.idle_heartbeats.saturating_add(1);
+        }
 
         if self.slot.tx_power.update(header.rssi) {
             radio.set_tx_power(self.slot.tx_power.get());

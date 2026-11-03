@@ -21,6 +21,8 @@ pub(crate) struct Nrf52Clock {
     pub(crate) rtc: Rtc<'static>,
     pub(crate) timer: Timer<'static>,
     ts: Timestamp,
+    hfclk_requested: bool,
+    hfclk_startup_rtc_ticks: u32,
     pub(crate) ratio: RtcRatio,
 }
 
@@ -41,6 +43,8 @@ impl Nrf52Clock {
             rtc,
             timer,
             ts: Timestamp::default(),
+            hfclk_requested: embassy_nrf::pac::CLOCK.hfclkrun().read().status(),
+            hfclk_startup_rtc_ticks: 0,
             ratio: RtcRatio::nominal(),
         }
     }
@@ -117,7 +121,7 @@ impl ClockDriver for Nrf52Clock {
             + (bytes as u32 + RADIO_CRC_LEN_BYTES) * TIMER_TICKS_PER_BYTE;
         let rx_ticks = ADDR_DELAY_TICKS + PACKETBUF_AIRTIME_TICKS;
 
-        let timeout_ticks = tx_ticks + rx_ticks + TIMEOUT_MARGIN_TIMER_TICKS;
+        let timeout_ticks = tx_ticks + rx_ticks + ACK_CHAIN_DELAY_TICKS + TIMEOUT_MARGIN_TIMER_TICKS;
 
         debug_assert!(
             timeout_ticks
@@ -130,6 +134,34 @@ impl ClockDriver for Nrf52Clock {
             .write(self.ts.timer.wrapping_add(timeout_ticks));
 
         timeout_ticks
+    }
+
+    fn calibrate_hfclk(&mut self) {
+        let clock = embassy_nrf::pac::CLOCK;
+        clock.tasks_hfclkstop().write_value(1);
+        let startup_us = crate::hardware::api::clock::measure_hfclk_us(
+            &mut self.timer,
+            || clock.hfclkstat().read().src() == embassy_nrf::pac::clock::vals::HfclkstatSrc::Rc,
+            || {
+                clock.events_hfclkstarted().write_value(0);
+                clock.tasks_hfclkstart().write_value(1);
+            },
+            || clock.events_hfclkstarted().read() != 0,
+        );
+        self.hfclk_startup_rtc_ticks = us_to_rtc_ticks(startup_us) as u32;
+        if !self.hfclk_requested {
+            clock.tasks_hfclkstop().write_value(1);
+        }
+    }
+
+    fn start_hfclk(&mut self) {
+        embassy_nrf::pac::CLOCK.tasks_hfclkstart().write_value(1);
+        self.hfclk_requested = true;
+    }
+
+    fn stop_hfclk(&mut self) {
+        embassy_nrf::pac::CLOCK.tasks_hfclkstop().write_value(1);
+        self.hfclk_requested = false;
     }
 
     fn start_peripheral(&mut self) {
@@ -149,15 +181,22 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn set_next_sync(&mut self, immediate: bool) -> (u32, u32) {
+        let startup_ticks = if self.hfclk_requested {
+            0
+        } else {
+            self.start_hfclk();
+            self.hfclk_startup_rtc_ticks
+        };
         // Every RTC-triggered window needs a fresh relative counter.
         self.timer.stop();
         self.timer.clear();
 
+        let margin = RADIO_MARGIN_RTC_TICKS + startup_ticks;
         let rtc_now = self.rtc.read();
         if immediate {
             // Arm the first scan after hardware setup headroom, not a scan period.
             self.ts = Timestamp {
-                rtc: rtc_wrap(rtc_now.wrapping_add(RADIO_MARGIN_RTC_TICKS)),
+                rtc: rtc_wrap(rtc_now.wrapping_add(margin)),
                 timer: 0,
             };
             self.rtc
@@ -180,12 +219,12 @@ impl ClockDriver for Nrf52Clock {
             elapsed = 0;
         }
         let period_hf = PERIPHEARL_SYNC_DURATION_US * HF_TICKS_PER_US;
-        let earliest_hf = self.ratio.rtc_to_hf(elapsed + RADIO_MARGIN_RTC_TICKS);
+        let earliest_hf = self.ratio.rtc_to_hf(elapsed + margin);
         let distance = earliest_hf.saturating_sub(self.ts.timer / REMAINDER_PER_HF_TICK);
         let mut slot_diff = distance.div_ceil(period_hf).max(1);
         let (rtc_delta, remainder) = loop {
             let next = self.ratio.advance(self.ts.timer, slot_diff * period_hf);
-            if next.0 >= elapsed + RADIO_MARGIN_RTC_TICKS {
+            if next.0 >= elapsed + margin {
                 break next;
             }
             slot_diff += 1;
@@ -229,6 +268,12 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
+        let startup_ticks = if self.hfclk_requested {
+            0
+        } else {
+            self.start_hfclk();
+            self.hfclk_startup_rtc_ticks
+        };
         // Reset before writing the next window's relative CC values.
         self.timer.stop();
         self.timer.clear();
@@ -244,7 +289,7 @@ impl ClockDriver for Nrf52Clock {
             tm.loop_us,
             tm.hb_loops,
             tm.drift(),
-            RADIO_MARGIN_RTC_TICKS,
+            RADIO_MARGIN_RTC_TICKS + startup_ticks,
             RX_WINDOW_MARGIN_US,
         );
 

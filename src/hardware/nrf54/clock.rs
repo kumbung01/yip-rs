@@ -88,6 +88,8 @@ pub(crate) struct Nrf54Clock {
     grtc: GrtcCc<'static>,
     pub(crate) timer: Timer<'static>,
     ts: Timestamp,
+    hfclk_requested: bool,
+    hfclk_startup_us: u32,
     ratio: GrtcRatio,
 }
 
@@ -115,6 +117,8 @@ impl Nrf54Clock {
             grtc: GrtcCc::new(grtc),
             timer: timer,
             ts: Timestamp { us: 0 },
+            hfclk_requested: embassy_nrf::pac::CLOCK.xo().run().read().status(),
+            hfclk_startup_us: 0,
             ratio: GrtcRatio::nominal(),
         }
     }
@@ -208,7 +212,7 @@ impl ClockDriver for Nrf54Clock {
             + HEADER_TICKS
             + (YIP_SUB_PACKET_SIZE as u32 + RADIO_CRC_LEN_BYTES) * TIMER_TICKS_PER_BYTE;
 
-        let timeout_ticks = tx_ticks + rx_ticks + TIMEOUT_MARGIN_TIMER_TICKS;
+        let timeout_ticks = tx_ticks + rx_ticks + ACK_CHAIN_DELAY_TICKS + TIMEOUT_MARGIN_TIMER_TICKS;
         debug_assert!(
             timeout_ticks < us_to_timer_ticks(YIP_SLOTSIZE_US as u32 - TIMESLOT_MARGIN_US) as u32,
             "timetout_ticks: {}, slotsize timeout: {}",
@@ -219,6 +223,44 @@ impl ClockDriver for Nrf54Clock {
         self.timer.cc(0).write(timeout_ticks);
 
         timeout_ticks
+    }
+
+    fn calibrate_hfclk(&mut self) {
+        let clock = embassy_nrf::pac::CLOCK;
+        clock.tasks_xostop().write_value(1);
+        self.hfclk_startup_us = crate::hardware::api::clock::measure_hfclk_us(
+            &mut self.timer,
+            || !clock.xo().stat().read().state(),
+            || {
+                clock.events_xotuned().write_value(0);
+                clock.events_xotunefailed().write_value(0);
+                clock.events_xotuneerror().write_value(0);
+                clock.tasks_xostart().write_value(1);
+            },
+            || {
+                if clock.events_xotunefailed().read() != 0 || clock.events_xotuneerror().read() != 0
+                {
+                    clock.events_xotunefailed().write_value(0);
+                    clock.events_xotuneerror().write_value(0);
+                    clock.events_xotuned().write_value(0);
+                    clock.tasks_xotune().write_value(1);
+                }
+                clock.events_xotuned().read() != 0
+            },
+        );
+        if !self.hfclk_requested {
+            clock.tasks_xostop().write_value(1);
+        }
+    }
+
+    fn start_hfclk(&mut self) {
+        embassy_nrf::pac::CLOCK.tasks_xostart().write_value(1);
+        self.hfclk_requested = true;
+    }
+
+    fn stop_hfclk(&mut self) {
+        embassy_nrf::pac::CLOCK.tasks_xostop().write_value(1);
+        self.hfclk_requested = false;
     }
 
     fn start_peripheral(&mut self) {
@@ -243,10 +285,16 @@ impl ClockDriver for Nrf54Clock {
     }
 
     fn set_next_sync(&mut self, immediate: bool) -> (u32, u32) {
+        let startup_us = if self.hfclk_requested {
+            0
+        } else {
+            self.start_hfclk();
+            self.hfclk_startup_us
+        };
         let now = Instant::now().as_micros();
+        let margin = SCHEDULE_MARGIN_US + startup_us;
         let (at, steps) = if immediate {
-            // Keep only the headroom needed to install the RX routes.
-            (now + SCHEDULE_MARGIN_US as u64, 0)
+            (now + margin as u64, 0)
         } else {
             schedule::next_sync(
                 now,
@@ -254,7 +302,7 @@ impl ClockDriver for Nrf54Clock {
                 self.ratio
                     .hf_to_grtc(PERIPHEARL_SYNC_DURATION_US)
                     .expect("sync interval overflow"),
-                SCHEDULE_MARGIN_US,
+                margin,
             )
         };
         self.timer.stop();
@@ -281,6 +329,12 @@ impl ClockDriver for Nrf54Clock {
     }
 
     fn set_next_slot_peripheral(&mut self, tm: &Timing) -> Result<(u32, u32), ()> {
+        let startup_us = if self.hfclk_requested {
+            0
+        } else {
+            self.start_hfclk();
+            self.hfclk_startup_us
+        };
         let now = Instant::now().as_micros();
         let next_slot = schedule::next_slot(
             now,
@@ -288,7 +342,7 @@ impl ClockDriver for Nrf54Clock {
             tm.loop_us,
             tm.drift(),
             tm.hb_loops,
-            SCHEDULE_MARGIN_US,
+            SCHEDULE_MARGIN_US + startup_us,
             RX_WINDOW_MARGIN_US,
             self.ratio,
         );

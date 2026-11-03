@@ -145,6 +145,18 @@ pub(crate) const TIMER_TICKS_PER_US: u32 = {
 
 pub(crate) const TIMEOUT_MARGIN_TIMER_TICKS: u32 = TIMEOUT_MARGIN_US * TIMER_TICKS_PER_US;
 
+// Maximum TX + RX chain delay across nRF52840 and nRF54L at the selected PHY.
+// Zephyr's radio_nrf52840.h and radio_nrf54lx.h give identical BLE values.
+pub(crate) const ACK_CHAIN_DELAY_TICKS: u32 = {
+    let round_trip_ns = match YIP_RADIO_BITRATE {
+        _1mbit => 2 * (600 + 9_400),
+        _2mbit => 2 * (600 + 5_000),
+        #[cfg(feature = "nrf54lm20")]
+        _4mbit => 5_000, // Provisional round-trip budget pending measurement.
+    };
+    (round_trip_ns * TIMER_TICKS_PER_US).div_ceil(1_000)
+};
+
 pub(crate) const RADIO_BITS_PER_US: u32 = match YIP_RADIO_BITRATE {
     _1mbit => 1,
     _2mbit => 2,
