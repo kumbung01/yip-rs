@@ -335,7 +335,7 @@ impl YipPeripheral {
             .checked_sub(ADDR_DELAY_TICKS)
             .expect("ADDRESS capture must include address delay");
 
-        let Ok(new_hb) = clock.update_timestamp_by_sync(clock.get_start_ts(), sync) else {
+        let Ok(new_hb) = clock.new_timestamp_by_sync(clock.get_start_ts(), sync) else {
             error!("hb set failed");
             self.sync_start();
             return;
@@ -562,7 +562,7 @@ impl YipPeripheral {
                             break 'rx_skip None;
                         };
 
-                        Some((rx_packet, body.as_slice()))
+                        Some((rx_packet, data))
                     }
 
                     PacketType::Invalid => None,

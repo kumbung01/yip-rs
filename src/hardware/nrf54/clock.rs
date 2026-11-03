@@ -146,16 +146,13 @@ impl Nrf54Clock {
 pub(crate) type Timing = crate::hardware::api::clock::Timing<Timestamp>;
 
 impl Timing {
-    fn set_drift(&mut self, drift_us: i32) {
-        if let Some(value) = &mut self.drift {
-            *value += drift_us / 4;
-        } else {
-            self.drift = Some(drift_us);
+    fn drift_by_sync(&self, sync: u32) -> Result<Option<nonmax::NonMaxI32>, ()> {
+        let sync_ticks = i32::try_from(sync).map_err(|_| ())?;
+        let residual_ticks = sync_ticks - (RX_WINDOW_MARGIN_US * TIMER_TICKS_PER_US) as i32;
+        if residual_ticks.unsigned_abs() > DRIFT_LIMIT_US * TIMER_TICKS_PER_US {
+            return Err(());
         }
-    }
-
-    fn get_drift_us(&self) -> i32 {
-        self.drift.unwrap_or(0)
+        Ok(self.filtered_drift(residual_ticks / TIMER_TICKS_PER_US as i32))
     }
 }
 
@@ -289,7 +286,7 @@ impl ClockDriver for Nrf54Clock {
             now,
             tm.hb.us,
             tm.loop_us,
-            tm.get_drift_us(),
+            tm.drift(),
             tm.hb_loops,
             SCHEDULE_MARGIN_US,
             RX_WINDOW_MARGIN_US,
@@ -320,22 +317,18 @@ impl ClockDriver for Nrf54Clock {
         let Some(sync) = self.read_sync().checked_sub(ADDR_DELAY_TICKS) else {
             return UpdateResult::Failed;
         };
-        let Ok(sync_ticks) = i32::try_from(sync) else {
+        let Ok(new_drift) = tm.drift_by_sync(sync) else {
             return UpdateResult::Failed;
         };
-        let drift = sync_ticks - (RX_WINDOW_MARGIN_US * TIMER_TICKS_PER_US) as i32;
-        if drift.abs() > (DRIFT_LIMIT_US * TIMER_TICKS_PER_US) as i32 {
-            return UpdateResult::Failed;
-        }
-        let Ok(hb) = self.update_timestamp_by_sync(self.ts, sync) else {
+        let Ok(new_ts) = self.new_timestamp_by_sync(self.ts, sync) else {
             return UpdateResult::Failed;
         };
-        tm.set_drift(drift / TIMER_TICKS_PER_US as i32);
-        tm.hb = hb;
+        tm.drift = new_drift;
+        tm.hb = new_ts;
         UpdateResult::Updated
     }
 
-    fn update_timestamp_by_sync(&self, ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
+    fn new_timestamp_by_sync(&self, ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
         let us = ts
             .us
             .checked_add(self.ratio.hf_to_grtc(sync / TIMER_TICKS_PER_US).ok_or(())? as u64)

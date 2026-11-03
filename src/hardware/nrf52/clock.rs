@@ -53,18 +53,14 @@ impl Nrf52Clock {
 pub(crate) type Timing = crate::hardware::api::clock::Timing<Timestamp>;
 
 impl Timing {
-    fn set_drift(&mut self, drift: i32) {
-        // Residual central/peripheral rate error, after RTC/HF calibration, in 16 MHz ticks.
-        let error_scaled = drift * HF_TICKS_PER_US as i32;
-        if let Some(value) = &mut self.drift {
-            *value += error_scaled / 4;
-        } else {
-            self.drift = Some(error_scaled);
+    fn drift_by_sync(&self, ts: Timestamp, sync: u32) -> Result<Option<nonmax::NonMaxI32>, ()> {
+        let sync = i32::try_from(sync).map_err(|_| ())?;
+        let expected = unscale_timer(ts.timer) as i32 + RX_WINDOW_MARGIN_US as i32;
+        let residual_us = sync.checked_sub(expected).ok_or(())?;
+        if residual_us.unsigned_abs() > DRIFT_LIMIT_US {
+            return Err(());
         }
-    }
-
-    fn get_drift_scaled(&self) -> i32 {
-        self.drift.unwrap_or(0)
+        Ok(self.filtered_drift(residual_us * HF_TICKS_PER_US as i32))
     }
 }
 
@@ -247,7 +243,7 @@ impl ClockDriver for Nrf52Clock {
             elapsed_rtc,
             tm.loop_us,
             tm.hb_loops,
-            tm.get_drift_scaled(),
+            tm.drift(),
             RADIO_MARGIN_RTC_TICKS,
             RX_WINDOW_MARGIN_US,
         );
@@ -283,28 +279,28 @@ impl ClockDriver for Nrf52Clock {
     }
 
     fn update_sync(&self, tm: &mut Timing) -> UpdateResult {
-        let sync = self.read_sync() as i32 - ADDR_DELAY_TICKS as i32;
-        let drift = sync - unscale_timer(self.ts.timer) as i32 - RX_WINDOW_MARGIN_US as i32;
-
         if !tm.is_hb {
             return UpdateResult::Skipped;
         }
 
-        if drift.abs() > DRIFT_LIMIT_US as i32 {
+        let Some(sync) = self.read_sync().checked_sub(ADDR_DELAY_TICKS) else {
             return UpdateResult::Failed;
-        }
-
-        let Ok(new_ts) = self.update_timestamp_by_sync(self.ts, sync as u32) else {
+        };
+        let Ok(new_drift) = tm.drift_by_sync(self.ts, sync) else {
             return UpdateResult::Failed;
         };
 
-        tm.set_drift(drift);
+        let Ok(new_ts) = self.new_timestamp_by_sync(self.ts, sync) else {
+            return UpdateResult::Failed;
+        };
+
+        tm.drift = new_drift;
         tm.hb = new_ts;
 
         UpdateResult::Updated
     }
 
-    fn update_timestamp_by_sync(&self, ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
+    fn new_timestamp_by_sync(&self, ts: Timestamp, sync: u32) -> Result<Timestamp, ()> {
         // Capture is relative to the RTC edge, not to ts.timer: do not add the old remainder.
         let hf_ticks = sync
             .checked_mul(HF_TICKS_PER_US / TIMER_TICKS_PER_US)

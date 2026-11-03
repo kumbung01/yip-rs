@@ -932,6 +932,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "fixed",
+ "log",
  "nonmax",
  "paste",
  "static_cell",
